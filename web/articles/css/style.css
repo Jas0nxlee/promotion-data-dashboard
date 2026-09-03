@@ -1,0 +1,67 @@
+@import url("../../css/style.css?v=20260805-5");
+
+:root {
+  --csdn: #fc5531;
+  --elecfans: #28b6a8;
+  --baijiahao: #4f8cff;
+  --zhihu: #3b82f6;
+  --wechat-service: #22c55e;
+  --wechat-subscription: #63d391;
+  --toutiao: #ff5a5f;
+  --sohu: #f4b942;
+  --xiaohongshu: #ff2442;
+  --line-cloud: #38bdf8;
+  --line-space: #34d399;
+}
+
+body {
+  background-image:
+    radial-gradient(1100px 500px at 16% -10%, rgba(52, 211, 153, .075), transparent 60%),
+    radial-gradient(1000px 500px at 86% -8%, rgba(56, 189, 248, .07), transparent 62%);
+}
+
+.article-logo {
+  background: conic-gradient(from 205deg, var(--green), var(--cyan), var(--gold), var(--green));
+  box-shadow: 0 0 14px rgba(52, 211, 153, .42);
+}
+
+.tag-csdn { color: var(--csdn); border-color: rgba(252, 85, 49, .48); background: rgba(252, 85, 49, .09); }
+.tag-elecfans { color: var(--elecfans); border-color: rgba(40, 182, 168, .5); background: rgba(40, 182, 168, .09); }
+.tag-baijiahao { color: var(--baijiahao); border-color: rgba(79, 140, 255, .5); background: rgba(79, 140, 255, .09); }
+.tag-zhihu { color: var(--zhihu); border-color: rgba(59, 130, 246, .5); background: rgba(59, 130, 246, .09); }
+.tag-wechat_service { color: var(--wechat-service); border-color: rgba(34, 197, 94, .5); background: rgba(34, 197, 94, .09); }
+.tag-wechat_subscription { color: var(--wechat-subscription); border-color: rgba(99, 211, 145, .5); background: rgba(99, 211, 145, .09); }
+.tag-toutiao { color: var(--toutiao); border-color: rgba(255, 90, 95, .5); background: rgba(255, 90, 95, .09); }
+.tag-sohu { color: var(--sohu); border-color: rgba(244, 185, 66, .5); background: rgba(244, 185, 66, .09); }
+.tag-xiaohongshu { color: var(--xiaohongshu); border-color: rgba(255, 36, 66, .5); background: rgba(255, 36, 66, .09); }
+
+.account-card .acct-table { min-width: 650px; }
+.acct-table td { vertical-align: top; }
+.acct-platform { margin-left: 4px; }
+.acct-profile-link { color: var(--text); text-decoration: none; }
+.acct-profile-link:hover { color: var(--cyan); text-decoration: underline; }
+.coverage-note {
+  margin-top: 3px;
+  color: var(--muted);
+  font-size: 10px;
+  max-width: 230px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.notice-summary { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
+.notice summary { cursor: pointer; color: var(--gold); margin-top: 4px; }
+.notice ul { margin: 7px 0 0 18px; color: #d7c89f; }
+.notice li + li { margin-top: 3px; }
+
+.detail-table { min-width: 1120px; }
+.cell-summary { max-width: 280px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+.kpi-sub strong { color: var(--text); font-weight: 600; }
+
+@media (max-width: 1120px) {
+  .account-card .acct-table { min-width: 760px; }
+}
+
+@media (max-width: 760px) {
+  .topbar-left { flex-wrap: wrap; }
+  .topbar h1 { font-size: 18px; }
+}

@@ -1,0 +1,21 @@
+# 本地环境与密钥
+.env
+.venv/
+.venv-win/
+
+# Python / macOS
+__pycache__/
+*.py[cod]
+.DS_Store
+
+# 浏览器与本地工具产物
+.playwright-cli/
+.workbuddy/
+output/
+
+# 调试、日志与运行时状态
+data/debug/
+data/*.log
+data/comment_alert.json
+data/scheduler_state.json
+data/comment_state.json

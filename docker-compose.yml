@@ -1,0 +1,45 @@
+name: promotion-dashboard
+
+services:
+  frontend:
+    image: promotion-dashboard-frontend:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    container_name: promotion-dashboard-frontend
+    ports:
+      - "${DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - ./web:/www:ro
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  scheduler:
+    image: promotion-dashboard-scheduler:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    container_name: promotion-dashboard-scheduler
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      DATA_COLLECTION_HOUR: "8"
+      SCHEDULER_POLL_SECONDS: "20"
+      VIDEO_FETCH_ARGS: "${VIDEO_FETCH_ARGS:-}"
+      ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:-}"
+      COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 0 --max-pages 200}"
+    volumes:
+      - ./data:/app/data
+      - ./web/data:/app/web/data
+      - ./web/articles/data:/app/web/articles/data
+      - ./config:/app/config:ro
+    shm_size: "1gb"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped

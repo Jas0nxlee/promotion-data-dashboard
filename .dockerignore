@@ -1,0 +1,15 @@
+.DS_Store
+.env
+.git
+.playwright-cli
+.venv
+.venv-win
+.workbuddy
+**/__pycache__
+**/*.pyc
+data/debug
+data/server.log
+data/comment_alert.json
+data/comment_state.json
+data/scheduler_state.json
+output

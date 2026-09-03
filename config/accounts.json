@@ -1,0 +1,59 @@
+{
+  "accounts": [
+    {
+      "platform": "bilibili",
+      "business_line": "望获",
+      "account_name": "望获OS",
+      "platform_uid": "3537118127197066",
+      "note": "已核验的账号ID；固定ID可避免同名搜索误匹配"
+    },
+    {
+      "platform": "bilibili",
+      "business_line": "芯片",
+      "account_name": "国科安芯",
+      "platform_uid": "483840524",
+      "note": "已核验的账号ID；固定ID可避免同名搜索误匹配"
+    },
+    {
+      "platform": "wechat_channels",
+      "business_line": "芯片",
+      "account_name": "国科安芯",
+      "platform_uid": "sphlNPnKwLDpi8S",
+      "note": "已提供并配置视频号 sph 短号",
+      "owner": "王五洋",
+      "content_type": "视频"
+    },
+    {
+      "platform": "wechat_channels",
+      "business_line": "望获",
+      "account_name": "望获OS",
+      "platform_uid": "sphloce8CzWkHZx",
+      "note": "已提供并配置视频号 sph 短号",
+      "owner": "李林蔚",
+      "content_type": "视频"
+    },
+    {
+      "platform": "wechat_channels",
+      "business_line": "芯片",
+      "account_name": "安芯很安心",
+      "platform_uid": "sphJAKPToNluH94",
+      "note": "已提供并配置视频号 sph 短号",
+      "owner": "吴宇",
+      "content_type": "视频号"
+    },
+    {
+      "platform": "douyin",
+      "business_line": "望获",
+      "account_name": "望获OS",
+      "platform_uid": "92034967516",
+      "note": "已核验的账号ID；固定ID可避免同名搜索误匹配"
+    },
+    {
+      "platform": "douyin",
+      "business_line": "芯片",
+      "account_name": "安芯Max",
+      "platform_uid": "mmmmmax_lllllfy",
+      "note": "已核验的账号ID；固定ID可避免同名搜索误匹配"
+    }
+  ]
+}

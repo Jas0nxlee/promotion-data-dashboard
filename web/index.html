@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>视频推广数据大屏</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="css/style.css?v=20260805-5">
+</head>
+<body>
+<div id="app">
+
+  <!-- 顶部标题栏 -->
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo-mark"></div>
+      <h1>视频推广数据大屏</h1>
+      <span class="subtitle" id="subtitle">账号与平台加载中</span>
+    </div>
+    <nav class="dashboard-switch" aria-label="推广数据大屏切换">
+      <a class="active" href="index.html">视频推广数据大屏</a>
+      <a href="articles/index.html">图文推广数据大屏</a>
+    </nav>
+    <div class="topbar-right">
+      <span id="sourceBadge" class="badge">数据加载中</span>
+      <span class="update-time">更新于 <b id="updatedAt">--</b></span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <section class="notice" id="dataNotice" hidden></section>
+
+  <section class="health-strip" id="dataHealth" aria-label="数据质量概览"></section>
+
+  <section class="control-bar" aria-label="全局筛选">
+    <div class="control-title"><i class="dot dot-cyan"></i>全局筛选<span>作用于全部指标与图表</span></div>
+    <div class="filters">
+      <select id="fPlatform"><option value="all">全部平台</option></select>
+      <select id="fLine"><option value="all">全部业务线</option></select>
+      <select id="fAccount"><option value="all">全部账号</option></select>
+      <select id="fPeriod">
+        <option value="all">全部时间</option>
+        <option value="30">近 30 天</option>
+        <option value="90">近 90 天</option>
+        <option value="365">近 1 年</option>
+      </select>
+      <button class="reset-filters" id="resetFilters" type="button">重置</button>
+    </div>
+    <div class="filter-summary" id="filterSummary"></div>
+  </section>
+
+  <!-- KPI 指标条 -->
+  <section class="kpi-strip" id="kpiStrip"></section>
+
+  <!-- 图表区第一行 -->
+  <section class="grid-row">
+    <div class="card span-3">
+      <div class="card-title"><i class="dot dot-cyan"></i>平台作品分布<span class="card-note">按当前筛选的发布记录</span></div>
+      <div class="chart" id="chartDist"></div>
+    </div>
+    <div class="card span-6">
+      <div class="card-title"><i class="dot dot-gold"></i>发布与播放趋势<span class="card-note">最近 24 个月 · 公开播放值（面积）/ 发布数（虚线）</span></div>
+      <div class="chart" id="chartTrend"></div>
+    </div>
+    <div class="card span-3">
+      <div class="card-title"><i class="dot dot-pink"></i>视频热榜
+        <span class="tabs" id="topTabs"></span>
+      </div>
+      <div class="rank-list" id="topList"></div>
+    </div>
+  </section>
+
+  <!-- 图表区第二行 -->
+  <section class="grid-row compare-row">
+    <div class="card span-3">
+      <div class="card-title"><i class="dot dot-violet"></i>业务线对比<span class="card-note">各指标按有值作品均值，最高业务线=100</span></div>
+      <div class="chart" id="chartRadar"></div>
+    </div>
+    <div class="card span-6">
+      <div class="card-title"><i class="dot dot-green"></i>账号指标对比
+        <span class="tabs" id="acctTabs"></span>
+      </div>
+      <div class="chart" id="chartAcct"></div>
+    </div>
+    <div class="card span-3">
+      <div class="card-title"><i class="dot dot-cyan"></i>账号概览</div>
+      <div class="acct-table-wrap">
+        <table class="acct-table" id="acctTable"></table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 明细表 -->
+  <section class="card detail-card">
+    <div class="card-title"><i class="dot dot-gold"></i>视频明细
+      <span class="detail-search">
+        <input type="search" id="fSearch" placeholder="搜索标题…">
+      </span>
+    </div>
+    <div class="table-wrap">
+      <table class="detail-table" id="detailTable"></table>
+    </div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <footer class="foot">
+    数据说明：总量仅汇总有公开值的记录，并在指标卡标明覆盖范围；未公开项显示 -；共享作品在全局总量中去重，在账号对比中保留账号关联。
+  </footer>
+
+</div>
+<script src="lib/echarts.min.js"></script>
+<script src="js/app.js?v=20260805-5"></script>
+</body>
+</html>

@@ -1,0 +1,58 @@
+{
+  "accounts": [
+    {
+      "account_key": "toutiao:土星云",
+      "nickname": "土星云",
+      "followers": null,
+      "total_articles": null,
+      "lifetime_reads": null,
+      "lifetime_likes": null,
+      "profile_url": "https://www.toutiao.com/c/user/1361637085287179/"
+    },
+    {
+      "account_key": "toutiao:国科安芯",
+      "nickname": "国科安芯",
+      "followers": null,
+      "total_articles": null,
+      "lifetime_reads": null,
+      "lifetime_likes": null,
+      "profile_url": "https://www.toutiao.com/c/user/6733312456/"
+    }
+  ],
+  "articles": [
+    {
+      "account_key": "toutiao:土星云",
+      "article_id": "替换为平台文章ID",
+      "title": "替换为文章标题",
+      "url": "https://www.toutiao.com/article/替换为文章ID/",
+      "cover": "",
+      "published_at": "2026-08-05T10:00:00+08:00",
+      "summary": "",
+      "tags": [],
+      "stats": {
+        "read": null,
+        "like": null,
+        "comment": null,
+        "share": null,
+        "collect": null
+      }
+    },
+    {
+      "account_key": "toutiao:国科安芯",
+      "article_id": "替换为平台文章ID",
+      "title": "替换为文章标题",
+      "url": "https://www.toutiao.com/article/替换为文章ID/",
+      "cover": "",
+      "published_at": "2026-08-05T10:00:00+08:00",
+      "summary": "",
+      "tags": [],
+      "stats": {
+        "read": null,
+        "like": null,
+        "comment": null,
+        "share": null,
+        "collect": null
+      }
+    }
+  ]
+}

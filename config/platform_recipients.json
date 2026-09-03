@@ -1,0 +1,20 @@
+{
+  "comment": "平台→负责人邮箱分发映射。来源：新媒体平台数据大屏.xlsx（报名统计）。仅分发评论；私信暂不接入数据源。",
+  "recipients": {
+    "bilibili": { "owner": "李林蔚", "email": "wanghuo@ucas.com.cn", "content_type": "视频", "target_metrics": "评论,私信" },
+    "wechat_channels": { "owner": "李林蔚", "email": "wanghuo@ucas.com.cn", "content_type": "视频", "target_metrics": "评论,私信" },
+    "douyin": { "owner": "李林蔚", "email": "wanghuo@ucas.com.cn", "content_type": "视频", "target_metrics": "评论,私信" },
+    "baijiahao": { "owner": "张培", "email": "zhangpei@ucas.com.cn", "content_type": "图文", "target_metrics": "评论" },
+    "csdn": { "owner": "张培", "email": "zhangpei@ucas.com.cn", "content_type": "图文", "target_metrics": "评论" },
+    "zhihu": { "owner": "张培", "email": "zhangpei@ucas.com.cn", "content_type": "图文", "target_metrics": "评论" },
+    "toutiao": { "owner": "张培", "email": "zhangpei@ucas.com.cn", "content_type": "图文", "target_metrics": "评论" },
+    "wechat_service": { "owner": "吴宇", "email": "wuyu@ucas.com.cn", "content_type": "图文", "target_metrics": "评论,私信" },
+    "wechat_subscription": { "owner": "吴宇", "email": "wuyu@ucas.com.cn", "content_type": "图文", "target_metrics": "评论,私信" },
+    "xiaohongshu": { "owner": "吴宇", "email": "wuyu@ucas.com.cn", "content_type": "图文", "target_metrics": "评论,私信" },
+    "elecfans": { "owner": "吴宇", "email": "wuyu@ucas.com.cn", "content_type": "图文", "target_metrics": "评论,私信" }
+  },
+  "unmapped": {
+    "sohu": { "note": "搜狐平台数据存在，但未在分发表(新媒体平台数据大屏.xlsx)中指定负责人，默认不自动发送" }
+  },
+  "fallback_email": "shangyinan@ucas.com.cn"
+}
