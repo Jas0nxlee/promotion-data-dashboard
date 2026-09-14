@@ -43,6 +43,7 @@ Docker Compose 包含两个服务：
 
 - `frontend`：BusyBox `httpd`，只读提供静态页面，默认端口 `8080`。
 - `scheduler`：Python 采集、评论监测、SMTP 发送和定时调度。
+- 视频和图文大屏均可一键导出当前筛选及搜索结果，生成 Excel 可直接打开的 UTF-8 CSV。
 
 ## 目录结构
 
@@ -171,22 +172,25 @@ docker compose up -d --no-build
 B站、抖音、小红书和视频号执行以下流程：
 
 1. 每小时读取账号最新一页内容，发现当天新增作品。
-2. 默认检查清单中的全部内容。
+2. 默认检查各账号近 90 天的最新 10 条内容。
 3. 完整分页一级评论。
-4. 对存在回复的一级评论继续完整分页二级回复。
+4. 默认不请求二级回复；移除 `--no-replies` 后可恢复。
 5. 使用评论 ID 去重，只把新增事件写入邮件队列。
 
 默认参数：
 
 ```env
-COMMENT_MONITOR_ARGS=--limit 0 --max-pages 200
+VIDEO_FETCH_ARGS=--no-enrich-bili
+ARTICLE_FETCH_ARGS=--wechat-pages 5
+COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20 --no-replies
 COMMENT_EMAIL_MAX_EVENTS=100
 ```
 
-- `--limit 0` 表示检查全部内容。
-- `--max-pages 200` 是单条内容或回复线程的安全上限。
+- `--limit 10` 表示每个账号最多检查最新 10 条内容。
+- `--max-age-days 90` 表示只检查近 90 天发布的内容。
+- `--max-pages 20` 是单条内容的安全上限。
 - 游标异常、游标重复或超过上限时，该内容本轮不推进状态，下小时重试。
-- 可用 `--no-replies` 关闭二级回复采集。
+- 默认用 `--no-replies` 关闭二级回复采集。
 - 可用 `--no-discovery` 关闭小时级新内容发现。
 
 ### 只提醒服务启动后的评论

@@ -147,6 +147,31 @@ body {
 .health-item strong { color: var(--text); font-size: 12px; font-weight: 650; white-space: nowrap; }
 .health-item span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+/* 数据质量折叠摘要：默认收起，仅显示一行状态 */
+.quality-collapse { margin-bottom: 10px; }
+.quality-collapse > summary {
+  cursor: pointer; list-style: none; user-select: none;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+  padding: 8px 12px;
+  border: 1px solid var(--border); border-radius: 7px;
+  background: rgba(14, 22, 40, .72);
+  color: var(--muted); font-size: 12px;
+}
+.quality-collapse > summary::-webkit-details-marker { display: none; }
+.quality-collapse > summary::before {
+  content: "▸"; flex: none; width: 12px; color: var(--cyan);
+  transition: transform .15s ease;
+}
+.quality-collapse[open] > summary::before { transform: rotate(90deg); }
+.quality-collapse > summary .quality-dot {
+  flex: none; width: 7px; height: 7px; border-radius: 50%;
+  background: var(--green); box-shadow: 0 0 7px rgba(52, 211, 153, .55);
+}
+.quality-collapse > summary.warn .quality-dot { background: var(--gold); box-shadow: 0 0 7px rgba(245, 195, 77, .55); }
+.quality-collapse > summary.error .quality-dot { background: var(--red); box-shadow: 0 0 7px rgba(248, 113, 113, .55); }
+.quality-collapse > summary .quality-summary-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.quality-collapse > .notice, .quality-collapse > .health-strip { margin-top: 8px; }
+
 .control-bar {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr) auto;
@@ -182,6 +207,18 @@ body {
   cursor: pointer;
 }
 .reset-filters:hover { color: var(--cyan); border-color: var(--cyan); }
+.export-data {
+  border: 1px solid rgba(52, 211, 153, .55);
+  border-radius: 6px;
+  background: rgba(52, 211, 153, .09);
+  color: #8af0c5;
+  padding: 5px 11px;
+  font-size: 11px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.export-data:hover { border-color: var(--green); background: rgba(52, 211, 153, .16); color: #b8f7db; }
+.export-data:disabled { cursor: default; opacity: .72; }
 
 /* ===== KPI 条 ===== */
 .kpi-strip {

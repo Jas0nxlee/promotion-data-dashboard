@@ -59,6 +59,40 @@ function monthOf(value) { return value ? value.slice(0, 7) : null; }
 function platformLabel(platform) { return PLATFORM_LABEL[platform] || platform || "未知"; }
 function richText(value) { return String(value ?? "").replace(/[{}|]/g, " "); }
 
+function csvCell(value) {
+  const text = value === null || value === undefined ? "" : String(value).replace(/\r\n?/g, "\n");
+  const safe = /^[=+\-@\t]/.test(text) ? `'${text}` : text;
+  return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function downloadCsv(filename, headers, rows) {
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
+  const url = URL.createObjectURL(new Blob(["\ufeff", csv], { type: "text/csv;charset=utf-8" }));
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 0);
+}
+
+function exportDate() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}-${String(now.getDate()).padStart(2, "0")}`;
+}
+
+function showExportResult(text) {
+  const button = $("exportData");
+  clearTimeout(button._resetTimer);
+  button.disabled = true;
+  button.textContent = text;
+  button._resetTimer = setTimeout(() => {
+    button.disabled = false;
+    button.textContent = "导出数据";
+  }, 1600);
+}
+
 function metricSummary(items, key) {
   const values = items.map((item) => num(item.stats?.[key])).filter((value) => value !== null);
   return {
@@ -228,6 +262,16 @@ function renderHealth() {
   ];
   $("dataHealth").innerHTML = health.map((item) =>
     `<div class="health-item ${item.level}"><strong>${item.title}</strong><span title="${esc(item.text)}">${esc(item.text)}</span></div>`).join("");
+  const worst = health.some((item) => item.level === "error") ? "error"
+    : health.some((item) => item.level === "warn") ? "warn" : "";
+  setHealthSummary(worst, `${ok}/${DATA.accounts.length} 账号完整 · ${uniqueCount} 篇去重文章 · 阅读覆盖 ${fmtPct(read.rate)} · ${ageText(DATA.updated_at)}`);
+}
+
+function setHealthSummary(level, text) {
+  const summary = $("healthSummary");
+  if (!summary) return;
+  summary.className = level;
+  summary.querySelector(".quality-summary-text").textContent = `数据质量：${text}`;
 }
 
 function renderNotice() {
@@ -587,13 +631,50 @@ function compareValues(left, right) {
   return left > right ? 1 : left < right ? -1 : 0;
 }
 
-function renderDetail(articles) {
+function detailRows(articles) {
   const keyword = $("fSearch").value.trim().toLowerCase();
   let rows = articles;
-  if (keyword) rows = rows.filter((article) =>
-    `${article.title || ""} ${article.summary || ""} ${article.account_name || ""}`.toLowerCase().includes(keyword));
-  rows = [...rows].sort((left, right) =>
+  if (keyword) {
+    rows = rows.filter((article) =>
+      `${article.title || ""} ${article.summary || ""} ${article.account_name || ""}`.toLowerCase().includes(keyword));
+  }
+  return [...rows].sort((left, right) =>
     compareValues(detailValue(left, state.sortKey), detailValue(right, state.sortKey)) * state.sortDir);
+}
+
+function exportCurrentData() {
+  const rows = detailRows(uniqueArticles(filteredArticles()));
+  if (!rows.length) {
+    showExportResult("无数据可导出");
+    return;
+  }
+  const headers = [
+    "平台", "业务线", "账号", "内容类型", "标题", "摘要", "发布时间",
+    "阅读", "点赞", "评论", "收藏", "分享", "文章ID", "链接", "快照状态",
+  ];
+  const values = rows.map((article) => [
+    article.platform_label || platformLabel(article.platform),
+    article.business_line || "",
+    article.account_name || "",
+    article.content_type || "",
+    article.title || "",
+    article.summary || "",
+    article.published_at || "",
+    num(article.stats?.read) ?? "",
+    num(article.stats?.like) ?? "",
+    num(article.stats?.comment) ?? "",
+    num(article.stats?.collect) ?? "",
+    num(article.stats?.share) ?? "",
+    article.article_id || "",
+    article.url || "",
+    article.snapshot_state || "",
+  ]);
+  downloadCsv(`图文推广数据_${exportDate()}.csv`, headers, values);
+  showExportResult(`已导出 ${rows.length} 条`);
+}
+
+function renderDetail(articles) {
+  const rows = detailRows(articles);
   const pages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
   state.page = Math.min(state.page, pages);
   const pageRows = rows.slice((state.page - 1) * PAGE_SIZE, state.page * PAGE_SIZE);
@@ -678,6 +759,7 @@ function initFilters() {
     $("fSearch").value = "";
     rebuildAccounts(); refresh();
   });
+  $("exportData").addEventListener("click", exportCurrentData);
   let debounce;
   $("fSearch").addEventListener("input", () => {
     clearTimeout(debounce);

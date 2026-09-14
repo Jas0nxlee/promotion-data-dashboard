@@ -5,7 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图文推广数据大屏</title>
 <link rel="icon" href="data:,">
-<link rel="stylesheet" href="css/style.css?v=20260805-5">
+  <link rel="stylesheet" href="css/style.css?v=20260914-1">
+
 </head>
 <body>
 <div id="app">
@@ -27,9 +28,11 @@
     </div>
   </header>
 
-  <section class="notice" id="dataNotice" hidden></section>
-
-  <section class="health-strip" id="dataHealth" aria-label="数据质量概览"></section>
+  <details class="quality-collapse" id="qualityCollapse">
+    <summary id="healthSummary"><i class="quality-dot"></i><span class="quality-summary-text">数据质量概览</span></summary>
+    <section class="notice" id="dataNotice" hidden></section>
+    <section class="health-strip" id="dataHealth" aria-label="数据质量概览"></section>
+  </details>
 
   <section class="control-bar" aria-label="全局筛选">
     <div class="control-title"><i class="dot dot-cyan"></i>全局筛选<span>作用于全部指标与图表</span></div>
@@ -44,6 +47,7 @@
         <option value="365">近 1 年</option>
       </select>
       <button class="reset-filters" id="resetFilters" type="button">重置</button>
+      <button class="export-data" id="exportData" type="button" title="导出当前筛选和搜索结果">导出数据</button>
     </div>
     <div class="filter-summary" id="filterSummary"></div>
   </section>
@@ -108,6 +112,6 @@
 
 </div>
 <script src="../lib/echarts.min.js"></script>
-<script src="js/app.js?v=20260805-5"></script>
+  <script src="js/app.js?v=20260914-1"></script>
 </body>
 </html>
