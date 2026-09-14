@@ -76,6 +76,21 @@ class MailPipelineTests(unittest.TestCase):
             _config, problems = send_comment_alerts.smtp_config()
         self.assertIn("SMTP_USERNAME/SMTP_PASSWORD 必须同时配置", problems)
 
+    def test_smtp_tls_modes_reject_port_465_without_ssl(self):
+        base = {"SMTP_HOST": "smtp.example.com", "SMTP_FROM": "from@example.com"}
+        for port, use_ssl, starttls, valid in [
+            ("465", "false", "true", False),
+            ("465", "true", "true", False),
+            ("465", "true", "false", True),
+            ("587", "false", "true", True),
+        ]:
+            with self.subTest(port=port, ssl=use_ssl, starttls=starttls):
+                env = {**base, "SMTP_PORT": port, "SMTP_SSL": use_ssl,
+                       "SMTP_STARTTLS": starttls}
+                with mock.patch.dict(os.environ, env, clear=True):
+                    _config, problems = send_comment_alerts.smtp_config()
+                self.assertEqual(valid, not problems)
+
     def test_recipient_environment_overrides_file_and_can_enable_sohu(self):
         env = {
             "COMMENT_RECIPIENT_BILIBILI": "new@example.com",

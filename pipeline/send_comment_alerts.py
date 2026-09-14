@@ -52,6 +52,10 @@ def smtp_config() -> tuple[dict, list[str]]:
     missing = [key for key in ("host", "from_addr") if not config[key]]
     if bool(config["username"]) != bool(config["password"]):
         missing.append("SMTP_USERNAME/SMTP_PASSWORD 必须同时配置")
+    if config["port"] == 465 and not config["use_ssl"]:
+        missing.append("465 端口必须设置 SMTP_SSL=true、SMTP_STARTTLS=false")
+    if config["use_ssl"] and config["starttls"]:
+        missing.append("SMTP_SSL 与 SMTP_STARTTLS 不能同时开启")
     return config, missing
 
 

@@ -1,5 +1,6 @@
 # 本地环境与密钥
 .env
+.serverenv
 .venv/
 .venv-win/
 
