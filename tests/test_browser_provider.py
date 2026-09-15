@@ -90,3 +90,15 @@ class BrowserProviderTests(unittest.TestCase):
         self.responses = [{"code": 0, "data": {"rows": [{"id": "1"}], "total": 2}}]
         with self.assertRaisesRegex(ProviderError, "重复页面"):
             self.source.pages("contents")
+
+    def test_browser_downloads_csv_and_checks_export_count(self):
+        self.context.route("**/fixture-export", lambda route: route.fulfill(content_type="text/html", body='''
+            <span id="total">1</span><button id="export" onclick="downloadFile()">导出</button>
+            <script>function downloadFile(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['id,views\\n12345678901234567890,42\\n'],{type:'text/csv'}));a.download='export.csv';a.click()}</script>
+        '''))
+        self.source.settings["workflows"]["export"] = {
+            "url": "https://www.bilibili.com/fixture-export", "download_selector": "#export",
+            "total_selector": "#total", "coverage": "all_published"}
+        result = self.source.export()
+        self.assertTrue(result.complete)
+        self.assertEqual("12345678901234567890", result.rows[0]["id"])

@@ -46,6 +46,7 @@ WEB_JSON_PATH = WEB / "articles" / "data" / "article_dashboard_data.json"
 WEB_JS_PATH = WEB / "articles" / "data" / "article_dashboard_data.js"
 from providers import ProviderRegistry
 from providers.history import retain_known
+from providers.health import record_verification
 CN_TZ = timezone(timedelta(hours=8))
 
 PLATFORM_LABEL = {
@@ -249,6 +250,7 @@ class HttpClient:
         self.last_call = 0.0
         self.call_count = 0
 
+
     def get(self, url, *, params=None, headers=None, timeout=30, retries=3, tag="page"):
         last_error = "未知错误"
         for attempt in range(1, retries + 1):
@@ -256,6 +258,7 @@ class HttpClient:
             if wait > 0:
                 time.sleep(wait)
             self.last_call = time.time()
+
             self.call_count += 1
             try:
                 response = self.session.get(url, params=params, headers=headers, timeout=timeout)
@@ -1152,7 +1155,14 @@ class ProviderArticleCollector:
         self.registry, self.max_pages = registry, max_pages
 
     def collect(self, account):
-        result = self.registry.get(account).collect(max_pages=self.max_pages)
+        key = account_key(account)
+        settings = self.registry.config.get("accounts", {}).get(key, {})
+        try:
+            result = self.registry.get(account).collect(max_pages=self.max_pages)
+            record_verification(key, settings, result)
+        except Exception as error:
+            record_verification(key, settings, error=error)
+            raise
         entry = base_account(account)
         entry.update(result.profile)
         entry.update({"total_articles": result.profile.get("total"),

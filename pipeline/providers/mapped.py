@@ -1,7 +1,9 @@
 """Normalized browser provider; mappings are explicit per observed workflow."""
 from urllib.parse import urlparse, parse_qs
+import json
 from .base import Collection, ProviderError, identifier, number, timestamp, pick, now, unique
 from .browser import BrowserSource
+from .identity import validate_aliases, native_id
 
 
 def mapped(raw, spec):
@@ -59,7 +61,9 @@ def normalize_comment(raw, mapping, parent=""):
     count = number(get("reply_count"))
     return {"comment_id": cid, "parent_comment_id": parent or identifier(get("parent_id")),
             "content": get("content") or "", "user": get("user") or "",
-            "created_at": timestamp(get("created_at")), "like_count": number(get("like")),
+            "user_ids": [identifier(v) for v in (get("user_id"), get("secondary_user_id")) if v not in (None, "")],
+            "created_at": timestamp(get("created_at")), "like": number(get("like")),
+            "like_count": number(get("like")),
             "reply_count": count, "source": "creator_browser"}
 
 
@@ -96,9 +100,34 @@ class MappedBrowserProvider:
             raise ProviderError("setup_required", "作品字段映射尚未核验")
         with self.browser.session():
             profile = self._profile()
-            pages = self.browser.pages("contents", max_pages=1 if discovery else max_pages, allow_partial=True)
-        records = [normalize_record(r, mapping, self.account["platform"], kind) for r in pages.rows]
+            if self.settings.get("collection_mode") == "export":
+                pages = self.browser.export()
+            else:
+                pages = self.browser.pages("contents", max_pages=1 if discovery else max_pages, allow_partial=True)
+        source_rows = []
+        for raw in pages.rows:
+            if mapping.get("decode_json_field"):
+                text = pick(raw, mapping["decode_json_field"])
+                try:
+                    raw = json.loads(text) if isinstance(text, str) else text
+                except ValueError:
+                    raise ProviderError("schema_changed", "内嵌文章数据不再是有效 JSON") from None
+            if mapping.get("expand_rows_path"):
+                nested = pick(raw, mapping["expand_rows_path"])
+                if not isinstance(nested, list) or any(not isinstance(r, dict) for r in nested):
+                    raise ProviderError("schema_changed", "多图文消息缺少子文章数组")
+                source_rows.extend(nested)
+            else:
+                source_rows.append(raw)
+        records = [normalize_record(r, mapping, self.account["platform"], kind) for r in source_rows]
         records = unique(records, "video_id" if kind == "video" else "article_id")
+        id_key = "video_id" if kind == "video" else "article_id"
+        aliases = validate_aliases(self.settings.get("content_aliases", {}))
+        for record in records:
+            record["native_content_id"] = record[id_key]
+            record[id_key] = aliases.get(record[id_key], record[id_key])
+        if len({r[id_key] for r in records}) != len(records):
+            raise ProviderError("invalid_mapping", "内容 ID 映射导致重复主键")
         profile["total"] = len(records) if pages.complete else None
         return Collection(profile, records, pages.complete, pages.note, self.source, self.call_count)
 
@@ -108,7 +137,7 @@ class MappedBrowserProvider:
             raise ProviderError("setup_required", "评论字段映射尚未核验，不能降级为评论数")
         if self.settings.get("comment_identity_compatible") is not True:
             raise ProviderError("migration_required", "尚未验证新旧评论 ID 一致性，请先完成只读对账")
-        values = {**item, "content_id": item["content_id"], "content_url": item.get("url", "")}
+        values = self._native_values(item)
         with self.browser.session():
             self._profile()
             page = self.browser.pages("comments", values, max_pages=max_pages)
@@ -127,4 +156,34 @@ class MappedBrowserProvider:
                         raise ProviderError("incomplete_replies", "回复记录少于声明数量，本轮不推进状态")
                     comments.extend(children)
                     reply_pages += replies.count
+        comments = self._canonical_comments(item, comments)
         return unique(comments, "comment_id"), {"root_pages": page.count, "reply_pages": reply_pages, "comments": len(comments)}
+
+    def _native_values(self, item):
+        return {**item, "content_id": item.get("native_content_id") or native_id(item["content_id"], self.settings.get("content_aliases", {})),
+                "content_url": item.get("url", "")}
+
+    def _canonical_comments(self, item, rows):
+        aliases = validate_aliases(self.settings.get("comment_aliases", {}).get(item["content_id"], {}))
+        for row in rows:
+            row["native_comment_id"] = row["comment_id"]
+            row["comment_id"] = aliases.get(row["comment_id"], row["comment_id"])
+            parent = row.get("parent_comment_id", "")
+            row["parent_comment_id"] = aliases.get(parent, parent)
+        if len({r["comment_id"] for r in rows}) != len(rows):
+            raise ProviderError("invalid_mapping", "评论 ID 映射导致重复主键")
+        return rows
+
+    def replies(self, item, root_id, max_pages=200):
+        if self.settings.get("comment_identity_compatible") is not True:
+            raise ProviderError("migration_required", "评论 ID 尚未完成迁移核验")
+        mapping = self.settings.get("reply_mapping") or self.settings.get("comment_mapping")
+        if not mapping:
+            raise ProviderError("setup_required", "未配置回复字段映射")
+        with self.browser.session():
+            self._profile()
+            aliases = self.settings.get("comment_aliases", {}).get(item["content_id"], {})
+            native_root = native_id(root_id, aliases)
+            page = self.browser.pages("replies", {**self._native_values(item), "comment_id": native_root}, max_pages=max_pages)
+        rows = [normalize_comment(r, mapping, native_root) for r in page.rows]
+        return unique(self._canonical_comments(item, rows), "comment_id"), page.count

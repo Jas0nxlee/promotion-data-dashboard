@@ -32,12 +32,23 @@ services:
       SCHEDULER_POLL_SECONDS: "20"
       VIDEO_FETCH_ARGS: "${VIDEO_FETCH_ARGS:---no-enrich-bili}"
       ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:---wechat-pages 5}"
-      COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 10 --max-age-days 90 --max-pages 20 --no-replies}"
+      COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 10 --max-age-days 90 --max-pages 20}"
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-800}"
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers.json
+      PROMOTION_SESSION_DIR: /app/data/sessions
     volumes:
       - ./data:/app/data
       - ./web/data:/app/web/data
       - ./web/articles/data:/app/web/articles/data
+      - ./web/comments/data:/app/web/comments/data
       - ./config:/app/config:ro
+      - type: bind
+        source: ${PROMOTION_PROVIDER_FILE:-./.runtime/providers.json}
+        target: /run/promotion/providers.json
+        read_only: true
+        bind:
+          create_host_path: false
+      - ./.runtime/sessions:/app/data/sessions
     shm_size: "1gb"
     init: true
     security_opt:

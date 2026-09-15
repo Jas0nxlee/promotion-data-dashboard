@@ -47,6 +47,7 @@ OUT_PATH = DATA / "dashboard_data.json"
 DEBUG_DIR = DATA / "debug"
 from providers import ProviderRegistry
 from providers.history import retain_known
+from providers.health import record_verification
 CN_TZ = timezone(timedelta(hours=8))
 
 
@@ -186,7 +187,7 @@ def collect(args, registry=None) -> dict:
     result = {
         "updated_at": run_at,
         "source": "platform_direct",
-        "refresh_scope": "all",
+        "refresh_scope": list(getattr(args, "only", None) or []) or "all",
         "accounts": [],
         "videos": [],
         "api_calls": 0,
@@ -197,6 +198,13 @@ def collect(args, registry=None) -> dict:
         cached_videos = [v for v in previous.get("videos", []) if v.get("account_key") == key]
         cached_account = next((a for a in previous.get("accounts", [])
                                if a.get("account_key") == key), None)
+        only = set(getattr(args, "only", None) or [])
+        if only and not ({key, acc["platform"], acc["account_name"]} & only):
+            entry = dict(cached_account or {**acc, "account_key": key, "status": "pending"})
+            entry["refreshed_in_run"] = False
+            result["accounts"].append(entry)
+            result["videos"].extend([{**row, "snapshot_state": "cached"} for row in cached_videos])
+            continue
         account_started = time.monotonic()
         calls_before = client.call_count
         print(f">>> 采集 {PLATFORM_LABEL[acc['platform']]} / {acc['business_line']} / {acc['account_name']}")
@@ -204,13 +212,14 @@ def collect(args, registry=None) -> dict:
                  "platform_label": PLATFORM_LABEL[acc["platform"]],
                  "followers": None, "total_videos": 0, "status": "ok", "error": "",
                  "last_attempt_at": run_at, "refreshed_in_run": False}
+        provider_settings = dict(client.config.get("accounts", {}).get(key, {}))
         try:
             provider = client.get(acc)
-            if acc["platform"] == "bilibili":
+            if acc["platform"] == "bilibili" and hasattr(provider, "http"):
                 provider.settings["enrich"] = not args.no_enrich_bili
-                if hasattr(provider, "http"):
-                    provider.http.interval = max(0.1, getattr(args, "interval", 0.6))
+                provider.http.interval = max(0.1, getattr(args, "interval", 0.6))
             collected = provider.collect(max_pages=getattr(args, "max_pages", 200))
+            record_verification(key, provider_settings, collected)
             info, vids = collected.profile, collected.records
             entry["data_source"] = collected.source
             if collected.complete and is_suspicious_drop(len(vids), len(cached_videos)):
@@ -240,6 +249,7 @@ def collect(args, registry=None) -> dict:
             result["videos"].extend(vids)
             print(f"    作品数: {len(vids)}")
         except Exception as e:
+            record_verification(key, provider_settings, error=e)
             message = compact_error(e)
             if cached_account and cached_videos:
                 # 单账号瞬时失败时保留上一次完整快照，避免本轮采集把线上大屏数据清空。
@@ -348,6 +358,7 @@ def main():
                     help="B站不逐条补全点赞/投币(减少请求)")
     ap.add_argument("--interval", type=float, default=0.6, help="API 调用最小间隔秒数")
     ap.add_argument("--max-pages", type=int, default=200)
+    ap.add_argument("--only", action="append", help="仅刷新指定平台、账号名或 account_key")
     ap.add_argument("--no-publish-web", action="store_true", help="不写入网页快照")
     ap.add_argument("--out", default=str(OUT_PATH), help="输出 JSON 路径")
     args = ap.parse_args()
@@ -370,7 +381,8 @@ def main():
             "window.__DASHBOARD_DATA__ = " + json.dumps(data, ensure_ascii=False) + ";\n",
         )
         print(f"已写入 {out} 与 {web_data}(.js)")
-    if not args.mock and (data.get("stale_accounts", 0) or data.get("error_accounts", 0) or data.get("partial_accounts", 0)):
+    if not args.mock and any(a.get("last_attempt_at") == data.get("updated_at") and a.get("status") != "ok"
+                             for a in data.get("accounts", [])):
         raise SystemExit(2)
 
 

@@ -13,6 +13,16 @@ data/server.log
 data/comment_alert.json
 data/comment_state.json
 data/scheduler_state.json
+data/comment_timeline.json
+data/api_usage.json
+data/api_usage.json.lock
+web/comments/data/comment_timeline.json
 output
 .runtime
 data/sessions
+data/exports
+data/verification
+data/run_history.jsonl
+data/collection_usage.json
+data/collection_usage.json.lock
+data/scheduler.lock

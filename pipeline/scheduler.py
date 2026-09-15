@@ -10,6 +10,10 @@ import shlex
 import subprocess
 import sys
 import time
+import signal
+import fcntl
+from contextlib import contextmanager
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -20,6 +24,20 @@ from runtime import DATA, is_test
 ROOT = Path(__file__).resolve().parent.parent
 STATE_PATH = DATA / "scheduler_state.json"
 CN_TZ = timezone(timedelta(hours=8))
+
+
+@contextmanager
+def scheduler_guard():
+    DATA.mkdir(parents=True, exist_ok=True)
+    with (DATA / "scheduler.lock").open("a") as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            raise RuntimeError("该运行目录已有调度器，拒绝重复启动") from None
+        try:
+            yield
+        finally:
+            fcntl.flock(lock, fcntl.LOCK_UN)
 
 
 def now_cn() -> datetime:
@@ -49,13 +67,22 @@ def command(script: str, env_name: str) -> list[str]:
 
 def run(name: str, argv: list[str]) -> int:
     log(f"开始{name}：{' '.join(shlex.quote(part) for part in argv)}")
-    try:
-        result = subprocess.run(argv, cwd=ROOT, check=False, timeout=int(os.environ.get("COLLECTION_TIMEOUT_SECONDS", "1800")))
-    except subprocess.TimeoutExpired:
-        log(f"{name}超过执行时限")
-        return 124
-    log(f"结束{name}：exit={result.returncode}")
-    return result.returncode
+    with subprocess.Popen(argv, cwd=ROOT, start_new_session=True) as process:
+        try:
+            code = process.wait(timeout=int(os.environ.get("COLLECTION_TIMEOUT_SECONDS", "1800")))
+        except subprocess.TimeoutExpired:
+            log(f"{name}超过执行时限，终止本任务进程组")
+            try:
+                os.killpg(process.pid, signal.SIGTERM)
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            except ProcessLookupError:
+                pass
+            return 124
+    log(f"结束{name}：exit={code}")
+    return code
 
 
 def run_data_collection() -> dict:
@@ -102,25 +129,77 @@ def scheduler_loop() -> None:
     daily_hour = int(os.environ.get("DATA_COLLECTION_HOUR", "8"))
     poll_seconds = max(10, int(os.environ.get("SCHEDULER_POLL_SECONDS", "20")))
     log(f"调度器启动：数据采集每天 {daily_hour:02d}:00，评论检查每小时整点")
-    while True:
-        run_due()
-        time.sleep(poll_seconds)
+    engine = DispatchScheduler()
+    try:
+        while True:
+            engine.tick()
+            time.sleep(poll_seconds)
+    finally:
+        engine.executor.shutdown(wait=True, cancel_futures=True)
+
+
+class DispatchScheduler:
+    """Separate data/comment lanes; catch up missed daily slots and retry failures."""
+    def __init__(self, executor=None):
+        self.executor = executor or ThreadPoolExecutor(max_workers=2)
+        self.running = {}
+
+    def tick(self, current=None):
+        current = current or now_cn()
+        state = load_state()
+        for kind, (future, slot, started) in list(self.running.items()):
+            if not future.done():
+                continue
+            try:
+                results = future.result()
+            except Exception:
+                results = {"worker": 1}
+            success = not any(results.values())
+            state[f"last_{kind}_attempt_at"] = current.isoformat()
+            state[f"last_{kind}_results"] = results
+            if success:
+                state[f"last_{kind}_slot"] = slot
+            else:
+                state[f"{kind}_retry_after"] = (current + timedelta(minutes=15)).isoformat()
+            save_state(state)
+            DATA.mkdir(parents=True, exist_ok=True)
+            with (DATA / "run_history.jsonl").open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps({"kind": kind, "slot": slot, "started_at": started,
+                                         "finished_at": current.isoformat(), "success": success,
+                                         "results": results, "test_mode": is_test()}) + "\n")
+            del self.running[kind]
+        slots = {"data": current.strftime("%Y-%m-%d"), "comment": current.strftime("%Y-%m-%dT%H")}
+        for kind, function in (("comment", run_comment_cycle), ("data", run_data_collection)):
+            if kind in self.running or state.get(f"last_{kind}_slot") == slots[kind]:
+                continue
+            if kind == "data" and current.hour < int(os.environ.get("DATA_COLLECTION_HOUR", "8")):
+                continue
+            retry_after = state.get(f"{kind}_retry_after")
+            if retry_after:
+                try:
+                    if datetime.fromisoformat(retry_after) > current:
+                        continue
+                except ValueError:
+                    pass
+            self.running[kind] = (self.executor.submit(function), slots[kind], current.isoformat())
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="采集任务容器调度器")
     parser.add_argument("--run", choices=("data", "comments", "all"), help="立即执行一次后退出")
     args = parser.parse_args()
-    if args.run in {"data", "all"}:
-        results = run_data_collection()
-        if any(results.values()):
-            raise SystemExit(1)
-    if args.run in {"comments", "all"}:
-        results = run_comment_cycle()
-        if any(results.values()):
-            raise SystemExit(1)
-    if not args.run:
-        scheduler_loop()
+    with scheduler_guard():
+        if args.run in {"data", "all"}:
+            results = run_data_collection()
+            if any(results.values()):
+                raise SystemExit(1)
+        if args.run in {"comments", "all"}:
+            results = run_comment_cycle()
+            if any(results.values()):
+                raise SystemExit(1)
+        if not args.run:
+            scheduler_loop()
+
 
 
 if __name__ == "__main__":

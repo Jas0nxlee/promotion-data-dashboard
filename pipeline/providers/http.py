@@ -3,6 +3,7 @@ import time
 from urllib.parse import urlparse
 import requests
 from .base import ProviderError
+from api_budget import ApiBudget
 
 
 class Http:
@@ -13,12 +14,14 @@ class Http:
         self.interval = interval
         self.last_call = 0
         self.call_count = 0
+        self.budget = ApiBudget(default_task="platform_http")
 
     def request(self, method, url, *, params=None, json=None, headers=None):
         parsed = urlparse(url)
         if parsed.scheme != "https" or parsed.hostname not in self.hosts:
             raise ProviderError("invalid_host", "请求不属于当前平台允许的 HTTPS 域名")
         for attempt in range(3):
+            self.budget.consume(parsed.hostname + parsed.path)
             time.sleep(max(0, self.interval - (time.monotonic() - self.last_call)))
             self.last_call = time.monotonic()
             self.call_count += 1

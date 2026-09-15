@@ -11,6 +11,7 @@ services:
       - ./web:/www:ro
       - ./.runtime/local/web/data:/www/data:ro
       - ./.runtime/local/web/articles/data:/www/articles/data:ro
+      - ./.runtime/local/web/comments/data:/www/comments/data:ro
     read_only: true
     tmpfs: [/tmp]
   collector:

@@ -176,6 +176,22 @@ class ProviderTests(unittest.TestCase):
             self.assertEqual(42, result["videos"][0]["stats"]["play"])
             self.assertEqual(0, result["api_calls"])
 
+    def test_native_video_cli_does_not_mutate_binding_fingerprint(self):
+        with tempfile.TemporaryDirectory() as folder:
+            config = Path(folder) / "accounts.json"
+            config.write_text(json.dumps({"accounts": [ACCOUNT]}))
+            settings = {"provider": "bilibili_creator", "expected_uid": "123"}
+            provider = SimpleNamespace(settings=settings, collect=Mock(return_value=Collection(
+                {"nickname": "测试账号", "followers": 2, "verified_account_id": "123"},
+                [{"video_id": "BVtest", "stats": {"like": 1, "comment": 1}}])))
+            registry = SimpleNamespace(config={"accounts": {"bilibili:测试账号": settings}},
+                                       call_count=0, get=lambda account: provider)
+            args = SimpleNamespace(out=Path(folder) / "new.json", no_enrich_bili=False)
+            with patch.object(fetch_data, "CONFIG_PATH", config), patch.object(fetch_data, "record_verification") as record:
+                fetch_data.collect(args, registry)
+            self.assertNotIn("enrich", settings)
+            self.assertEqual(settings, record.call_args.args[1])
+
     def test_article_no_publish_option_writes_only_requested_file(self):
         with tempfile.TemporaryDirectory() as folder:
             dest = Path(folder) / "out.json"

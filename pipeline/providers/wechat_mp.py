@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from .base import Collection, ProviderError, identifier, now, number, CN_TZ, unique
 from .mapped import mp_identity
 from .http import Http
+from .credentials import WeChatToken
 
 
 class WeChatOfficialProvider:
@@ -21,10 +22,7 @@ class WeChatOfficialProvider:
         key = f"{self.account['platform']}:{self.account['account_name']}"
         if self.settings.get("bound_account_key") != key:
             raise ProviderError("identity_mismatch", "官方令牌尚未与此公众号完成绑定核验")
-        env = self.settings.get("access_token_env")
-        token = os.environ.get(env or "", "").strip()
-        if not token:
-            raise ProviderError("session_expired", "公众号官方令牌缺失；需由授权凭证管理服务提供")
+        token = WeChatToken(self.settings, self.http).get()
         response = self.http.request("POST", "https://api.weixin.qq.com" + path,
                                      params={"access_token": token}, json=payload)
         code = response.get("errcode", 0)
@@ -73,7 +71,11 @@ class WeChatOfficialProvider:
                 raise ProviderError("incomplete_pagination", "发布记录空页但未达到总数")
         verified = self.settings.get("history_scope_verified") is True
         complete = end and verified
-        return Collection({"nickname": self.account["account_name"], "followers": None, "total": len(rows)},
+        stable_binding = (not os.environ.get(self.settings.get("access_token_env", ""))
+                          and os.environ.get(self.settings.get("app_id_env", "")) == self.settings.get("expected_app_id")
+                          and bool(self.settings.get("expected_app_id")))
+        return Collection({"nickname": self.account["account_name"], "followers": None, "total": len(rows),
+                           "verified_account_id": self.settings.get("expected_app_id") if stable_binding else None},
                           unique(rows, "article_id"), complete,
                           "官方发布清单；未返回首次发布时间和累计互动。" + ("" if verified else "需与后台历史、图片消息对账；保留缓存。") + ("" if end else "分页尚未结束。"),
                           self.source, self.call_count)

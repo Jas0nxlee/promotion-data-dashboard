@@ -4,6 +4,8 @@ from .base import ProviderError
 from .mapped import MappedBrowserProvider
 from .bilibili import BilibiliProvider
 from .wechat_mp import WeChatOfficialProvider
+from .bilibili_creator import BilibiliCreatorProvider
+from api_budget import ApiBudget
 
 PLATFORMS = {"bilibili", "douyin", "wechat_channels", "xiaohongshu", "zhihu", "wechat_service", "wechat_subscription"}
 
@@ -36,6 +38,9 @@ class ProviderRegistry:
             if not settings:
                 raise ProviderError("setup_required", "账号尚未绑定已核验的后台采集配置，请运行 provider_setup status")
             kind = settings.get("provider", "browser")
+            if kind == "bilibili_creator" and platform == "bilibili":
+                self.providers[key] = BilibiliCreatorProvider(account, settings)
+                return self.providers[key]
             if kind == "wechat_official" and platform in {"wechat_service", "wechat_subscription"}:
                 self.providers[key] = WeChatOfficialProvider(account, settings)
                 return self.providers[key]
@@ -50,3 +55,14 @@ class ProviderRegistry:
 
     def discover(self, account):
         return self.get(account).collect(discovery=True)
+
+    def fetch_roots(self, item, max_pages=200):
+        comments, stats = self.get(item).comments(item, max_pages, False)
+        return comments, stats["root_pages"]
+
+    def fetch_replies(self, item, root_id, max_pages=200):
+        return self.get(item).replies(item, root_id, max_pages)
+
+    def usage_snapshot(self):
+        return {**ApiBudget().snapshot(), "source": "platform_direct", "scope": "day",
+                "unit": "direct_http_or_browser_action"}

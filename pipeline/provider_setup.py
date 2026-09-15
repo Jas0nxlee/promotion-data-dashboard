@@ -8,6 +8,7 @@ from runtime import ROOT, SESSIONS, PROVIDER_CONFIG
 from providers.base import ProviderError
 from providers.browser import session_key, account_lock
 from providers.registry import PLATFORMS, ProviderRegistry
+from providers.health import read_verification, record_verification, record_comment_verification
 
 ENTRIES = {
     "bilibili": "https://member.bilibili.com/platform/home",
@@ -37,11 +38,11 @@ def status():
         required = ["profile", "contents"]
         if a["platform"] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}:
             required.extend(["comments", "replies"])
-        missing = [x for x in required if x not in config.get("workflows", {})]
+        missing = [] if config.get("provider") in {"bilibili_creator", "wechat_official"} else [x for x in required if x not in config.get("workflows", {})]
         result.append({"account": key, "configured": bool(config),
                        "missing_workflows": missing, "session_saved": (SESSIONS / session_key(key)).is_dir(),
                        "comment_identity_verified": config.get("comment_identity_compatible") is True,
-                       "live_verified": False})
+                       "live_verification": read_verification(key, config)})
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 
@@ -51,7 +52,8 @@ def login(account, channel):
     with account_lock(key), sync_playwright() as p:
         folder = SESSIONS / session_key(key)
         folder.mkdir(mode=0o700, exist_ok=True)
-        context = p.chromium.launch_persistent_context(str(folder), channel=channel, headless=False)
+        context = p.chromium.launch_persistent_context(str(folder), channel=channel, headless=False,
+                    ignore_default_args=["--password-store=basic", "--use-mock-keychain"])
         try:
             page = context.new_page()
             page.goto(ENTRIES[account["platform"]], wait_until="domcontentloaded")
@@ -63,10 +65,13 @@ def login(account, channel):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", choices=("status", "login", "probe", "probe-bilibili"))
+    p.add_argument("command", choices=("status", "login", "probe", "probe-bilibili", "probe-comments", "reconcile", "export-session"))
     p.add_argument("--account", help="platform:account_name")
     p.add_argument("--channel", default="chrome")
     p.add_argument("--bvid")
+    p.add_argument("--content-id")
+    p.add_argument("--previous", type=Path)
+    p.add_argument("--incoming", type=Path)
     p.add_argument("--max-pages", type=int, default=2)
     p.add_argument("--output", type=Path)
     args = p.parse_args()
@@ -79,7 +84,27 @@ def main():
     if args.command == "login":
         login(account, args.channel)
         return
-    if args.command == "probe-bilibili":
+    if args.command == "export-session":
+        provider = ProviderRegistry().get(account)
+        if not hasattr(provider, "browser"):
+            p.error("官方接口提供器不使用浏览器会话")
+        with provider.browser.session():
+            provider._profile()
+            path = provider.browser.export_session()
+        print(f"已导出此账号平台会话：{path.name}；文件权限 600，不包含其他平台登录态")
+        return
+    if args.command == "reconcile":
+        from providers.identity import reconcile_contents
+        if not args.previous or not args.incoming:
+            p.error("reconcile 需要 --previous 和 --incoming JSON 文件")
+        before = json.loads(args.previous.read_text())
+        after = json.loads(args.incoming.read_text())
+        video = account["platform"] in {"bilibili", "douyin", "wechat_channels"}
+        key = "videos" if video else "articles"
+        previous = [r for r in before.get(key, []) if r.get("account_key") == args.account]
+        incoming = after.get("records", after.get(key, []))
+        result = reconcile_contents(previous, incoming, "video_id" if video else "article_id")
+    elif args.command == "probe-bilibili":
         if account["platform"] != "bilibili" or not args.bvid:
             p.error("公开详情验证需要 B站账号和 --bvid")
         from providers.bilibili import BilibiliProvider
@@ -89,7 +114,23 @@ def main():
             raise ProviderError("identity_mismatch", "视频原作者与选定账号不一致")
     else:
         from dataclasses import asdict
-        result = asdict(ProviderRegistry().get(account).collect(max_pages=args.max_pages))
+        registry = ProviderRegistry()
+        settings = registry.config.get("accounts", {}).get(args.account, {})
+        try:
+            provider = registry.get(account)
+            if args.command == "probe-comments":
+                if not args.content_id:
+                    p.error("评论验证需要 --content-id")
+                comments, stats = provider.comments({**account, "content_id": args.content_id}, args.max_pages, True)
+                result = {"comments": comments, "stats": stats}
+                record_comment_verification(args.account, settings, comments)
+            else:
+                collection = provider.collect(max_pages=args.max_pages)
+                record_verification(args.account, settings, collection)
+                result = asdict(collection)
+        except ProviderError as error:
+            record_verification(args.account, settings, error=error)
+            raise
     if args.output:
         dest = args.output.resolve()
         # Diagnostic output is always separate from dashboard and mail state.

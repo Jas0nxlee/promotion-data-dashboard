@@ -1,0 +1,207 @@
+:root {
+  --timeline-blue: #60a5fa;
+  --timeline-green: #34d399;
+  --timeline-amber: #f5c34d;
+}
+
+body {
+  background-image:
+    radial-gradient(1100px 520px at 15% -12%, rgba(96, 165, 250, .08), transparent 62%),
+    radial-gradient(920px 460px at 88% -8%, rgba(52, 211, 153, .07), transparent 60%);
+}
+
+.timeline-logo {
+  background: conic-gradient(from 215deg, var(--timeline-blue), var(--timeline-green), var(--timeline-amber), var(--timeline-blue));
+}
+
+.timeline-status {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: rgba(14, 22, 40, .72);
+  color: var(--muted);
+  font-size: 12px;
+}
+.timeline-status::before {
+  content: "";
+  width: 8px;
+  height: 8px;
+  flex: none;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 8px rgba(52, 211, 153, .55);
+}
+.timeline-status.warn::before { background: var(--gold); box-shadow: 0 0 8px rgba(245, 195, 77, .55); }
+.timeline-status.error::before { background: var(--red); box-shadow: 0 0 8px rgba(248, 113, 113, .55); }
+.timeline-status strong { color: var(--text); }
+
+.timeline-filters input {
+  width: min(270px, 28vw);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  font-size: 12px;
+  padding: 5px 9px;
+  border-radius: 6px;
+  outline: none;
+}
+.timeline-filters input:focus { border-color: var(--cyan); }
+
+.timeline-kpis {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.timeline-overview .span-4 { grid-column: span 4; }
+.timeline-overview .span-8 { grid-column: span 8; }
+.timeline-overview .card { min-height: 270px; }
+.usage-chart { height: 225px; }
+
+.budget-number {
+  display: flex;
+  align-items: flex-end;
+  gap: 8px;
+  margin-top: 20px;
+}
+.budget-number strong {
+  color: var(--green);
+  font-size: 34px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.budget-number span { color: var(--muted); font-size: 12px; padding-bottom: 3px; }
+.budget-meter {
+  height: 8px;
+  margin: 14px 0 16px;
+  overflow: hidden;
+  border-radius: 999px;
+  background: rgba(130, 150, 189, .16);
+}
+.budget-meter i {
+  display: block;
+  width: var(--usage, 0%);
+  height: 100%;
+  border-radius: inherit;
+  background: var(--green);
+}
+.budget-meter.warn i { background: var(--gold); }
+.budget-meter.error i { background: var(--red); }
+.usage-breakdown { display: grid; gap: 7px; }
+.usage-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; font-size: 11px; }
+.usage-row span { color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.usage-row strong { color: var(--text); font-variant-numeric: tabular-nums; }
+
+.timeline-card { min-height: 420px; }
+.timeline-list {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+  padding: 0 4px 0 30px;
+}
+.timeline-list::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 12px;
+  width: 1px;
+  background: linear-gradient(var(--cyan), rgba(56, 217, 245, .08));
+}
+.thread-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: rgba(7, 12, 24, .48);
+  padding: 12px 14px;
+}
+.thread-card::before {
+  content: "";
+  position: absolute;
+  left: -23px;
+  top: 17px;
+  width: 9px;
+  height: 9px;
+  border: 2px solid var(--cyan);
+  border-radius: 50%;
+  background: var(--bg);
+  box-shadow: 0 0 8px rgba(56, 217, 245, .42);
+}
+.thread-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding-bottom: 9px;
+  border-bottom: 1px solid rgba(44, 65, 112, .45);
+}
+.thread-head time { color: var(--cyan); font-size: 12px; font-variant-numeric: tabular-nums; }
+.thread-title {
+  min-width: 180px;
+  flex: 1;
+  color: var(--text);
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.thread-title:hover { color: var(--cyan); }
+.reply-status {
+  padding: 3px 8px;
+  border: 1px solid rgba(245, 195, 77, .42);
+  border-radius: 999px;
+  color: var(--gold);
+  font-size: 10px;
+}
+.reply-status.replied { border-color: rgba(52, 211, 153, .42); color: var(--green); }
+.event-block { display: grid; grid-template-columns: 116px minmax(0, 1fr); gap: 12px; padding-top: 11px; }
+.event-meta { color: var(--muted); font-size: 11px; line-height: 1.55; }
+.event-meta strong { display: block; color: var(--text); font-size: 12px; }
+.event-content { color: #d4e0f4; line-height: 1.62; white-space: pre-wrap; overflow-wrap: anywhere; }
+.official-replies { margin: 10px 0 0 116px; display: grid; gap: 8px; }
+.official-reply {
+  position: relative;
+  padding: 10px 12px;
+  border-left: 2px solid var(--green);
+  border-radius: 0 7px 7px 0;
+  background: rgba(52, 211, 153, .065);
+}
+.official-reply::before {
+  content: "官方回复";
+  display: inline-block;
+  margin-right: 8px;
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 650;
+}
+.official-reply time { color: var(--muted); font-size: 10px; }
+.official-reply p { margin-top: 6px; color: #d4f4e7; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.response-chip { float: right; color: var(--green); font-size: 10px; }
+.pending-note { margin: 10px 0 0 116px; color: var(--gold); font-size: 11px; }
+.timeline-empty { padding: 70px 20px; text-align: center; color: var(--muted); }
+.timeline-empty strong { display: block; margin-bottom: 8px; color: var(--text); font-size: 16px; }
+
+@media (max-width: 1400px) {
+  .timeline-kpis { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}
+
+@media (max-width: 1120px) {
+  .timeline-overview .span-4, .timeline-overview .span-8 { grid-column: span 12; }
+  .timeline-filters input { width: min(360px, 48vw); }
+}
+
+@media (max-width: 760px) {
+  .timeline-kpis { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .timeline-filters input { width: 100%; flex: 1 1 100%; }
+  .timeline-list { padding-left: 22px; }
+  .timeline-list::before { left: 7px; }
+  .thread-card::before { left: -20px; }
+  .event-block { grid-template-columns: 1fr; gap: 4px; }
+  .official-replies, .pending-note { margin-left: 0; }
+  .thread-title { flex-basis: 100%; order: 4; }
+}

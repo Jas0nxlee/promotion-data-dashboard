@@ -7,13 +7,13 @@
 | 能力 | 当前实现状态 | 真实平台验收 |
 | --- | --- | --- |
 | 视频、图文、评论及小时级发现的统一 provider | 已接入，运行代码不再含 TikHub 请求路径或 Key 依赖 | 已验证缺少配置时保留历史并明确失败 |
-| 浏览器会话、身份校验、响应监听、自动翻页、字段映射 | 已实现；真实 Chromium 本地响应夹具测试通过 | 14 个账号尚未绑定已核验的完整后台流程 |
-| B站公开视频详情 | 原生 HTTP 适配器，校验 BV 与作者 ID | 望获OS 一个实际视频详情读取成功 |
-| 公众号官方发布列表 | 已实现分页、多图文展开、历史 ID 映射与权限错误处理 | 未提供该账号官方令牌，尚未实测 |
+| 浏览器会话、身份校验、响应监听、自动翻页、字段映射 | 已实现；真实 Chromium 本地响应夹具测试通过 | B站望获OS已通过；其余13个账号仍需接入 |
+| B站公开视频详情 | 原生 HTTP 适配器，校验 BV 与作者 ID | 望获OS已通过全量后台稿件、代表作品评论及回复、CLI与会话恢复验证 |
+| 公众号官方发布列表 | 已实现分页、多图文展开、历史 ID 映射与权限错误处理 | 稳定令牌自动续期已实现；未提供实际账号凭证，尚未实测 |
 | 公众号新每日阅读统计 | 提供单独查询方法，保存阅读人数与延迟标记 | 未接入常规调度；不混入累计阅读次数 |
 | 抖音、小红书、知乎、视频号、公众号后台 | 可使用统一浏览器执行器和显式字段映射 | 需登录确认各后台响应路径、字段、翻页操作和角色权限；当前没有可声称即插即用的已验证配方 |
 | 评论迁移保护 | 新旧 ID 未确认时阻止扫描推进与提醒 | 需真实新旧评论对账后配置兼容标记；尚未实现不同 ID 体系的自动映射迁移 |
-| 自动下载平台报表、官方令牌自动续期 | 未实现 | 需账号登录后确定导出入口及授权管理方式 |
+| 自动下载平台报表、官方令牌自动续期 | 通用导出与微信稳定令牌续期已实现并本地测试 | 真实导出按钮与账号凭证仍待接入 |
 | 连续运行观察 | 未开始 | 平台接入完成后再进行至少 7 天观察 |
 
 ## 1. 本地测试
@@ -58,7 +58,7 @@ export PROMOTION_PROVIDER_CONFIG="$PWD/.runtime/providers.json"
 
 ## 3. 浏览器工作流配置
 
-`config/providers.example.json` 只是结构示例，含占位值，不能视为已验证的 B站后台适配。实际配置保存到 `.runtime/providers.json` 并设置文件权限 600，避免把浏览器环境和账号绑定写入仓库。
+`config/providers.example.json` 提供已核验的 B站原生后台配置结构，使用 `provider=bilibili_creator`；仍需对应账号的登录会话。其他平台的通用 browser 配置须登录后校准。实际配置保存到 `.runtime/providers.json` 并设置文件权限 600，避免把浏览器环境和账号绑定写入仓库。
 
 每个账号配置包含：
 
@@ -87,7 +87,7 @@ export PROMOTION_PROVIDER_CONFIG="$PWD/.runtime/providers.json"
 }
 ```
 
-令牌应来自该账号已完成绑定的授权服务，通过进程环境提供；此版本未实现令牌自动刷新。不能把别的公众号令牌填入同一个绑定。认证、权限与发布清单范围仍由微信实际返回决定。完成与后台历史和图片消息的对账前，不将 `history_scope_verified` 设为 true。
+令牌应来自该账号已完成绑定的授权服务，通过进程环境提供；也可以配置 `app_id_env`、`app_secret_env`、`expected_app_id`，启用带文件锁和私有缓存的稳定令牌自动续期。续期只使用普通模式，不主动强制其他令牌失效。不能把别的公众号令牌填入同一个绑定。认证、权限与发布清单范围仍由微信实际返回决定。完成与后台历史和图片消息的对账前，不将 `history_scope_verified` 设为 true。
 
 发布列表无法从 URL 解析旧文章主键时停止覆盖，避免同文换 ID 重复入库。官方素材更新时间不写成首次发布时间。每日阅读人数由 `daily_readers(day)` 单独返回，不能直接作为大屏累计阅读量。
 
@@ -117,4 +117,35 @@ PROMOTION_DEV_ID=promotion-dev-9a6c docker compose -f docker-compose.local.yml c
 
 每个工作树使用不同的 `PROMOTION_DEV_ID` 与 `PROMOTION_DEV_PORT`。本轮仅提供配置，未实际部署容器。浏览器登录 profile 跨 macOS/Linux 不保证可搬运，容器登录流程需另行验证。
 
-当前分支从原基线独立开发；主干同期已经加入官方回复时间线。后续集成需在本分支合并或重放主干更新并重新验收回复时间线，不能直接覆盖主干新版评论模块。
+本分支已集成并回归主干的官方回复时间线。所有变更仍仅在独立分支，尚未反向合并到主干。
+
+
+## 7. 本地接入面板和健康检查
+
+```bash
+PROMOTION_RUNTIME_DIR="$PWD/.runtime/local" PROMOTION_TEST_MODE=1 \
+  .venv/bin/python pipeline/control_panel.py --port 18761
+```
+
+在本机打开 `http://127.0.0.1:18761/`。可逐账号打开登录窗口、查看配置和提交只读验证。面板不启动正式调度器，不发送邮件，不对外提供凭证。管理页面必须由控制面板服务提供，静态前端上的同名 HTML 不具备管理 API。
+
+```bash
+.venv/bin/python pipeline/provider_setup.py probe-comments \
+  --account 'bilibili:望获OS' --content-id BV1YsY76REso --max-pages 20 \
+  --output .runtime/probes/bilibili-comments.json
+.venv/bin/python pipeline/healthcheck.py --require-ready --min-observation-days 7
+```
+
+健康检查按配置版本保留评论流程验证证据，账号身份和内容采集结果须在24小时内；正式采集会更新结果。观察期记录来自实际调度运行，没有足够跨度或存在账号未接入时返回非零状态，不能用修改日期或演示数据冒充完成。
+
+调度器的数据和评论使用独立执行通道；失败15分钟后可重试，错过08:00的每日任务可在当天补跑。同一运行目录不允许重复启动调度器。预算单位为直接 HTTP 请求或一页浏览器采集，不等同于网页内部全部网络请求，也不代表第三方计费。保留的旧公开采集器不纳入这份 provider 预算。
+
+## 8. 会话移植与部署
+
+```bash
+.venv/bin/python pipeline/provider_setup.py export-session --account 'bilibili:望获OS'
+```
+
+程序先验证身份，再仅导出该平台的 Cookies 和浏览器本地状态，文件权限为600。生产配置可设置 `session_mode=portable`、`channel=chromium`，并移除本机调试用的 `cdp_url`。Compose 通过 `PROMOTION_PROVIDER_FILE` 选择配置文件，同时挂载私有会话目录，不将它们写入镜像。可移植会话已在本机的新浏览器上下文验证；跨机器、跨IP仍可能触发重新授权，必须先做目标环境只读测试。
+
+微信稳定令牌规则已按[微信官方文档](https://developers.weixin.qq.com/doc/subscription/api/base/api_getstableaccesstoken.html)核对。实际开通权限、IP白名单和管理员确认仍需该账号完成。

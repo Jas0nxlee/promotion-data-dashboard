@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>评论互动时间线</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="../css/style.css?v=20260915-2">
+<link rel="stylesheet" href="css/style.css?v=20260915-2">
+</head>
+<body>
+<div id="app">
+  <header class="topbar">
+    <div class="topbar-left">
+      <div class="logo-mark timeline-logo"></div>
+      <h1>评论互动时间线</h1>
+      <span class="subtitle" id="subtitle">上线后新增评论与官方回复</span>
+    </div>
+    <nav class="dashboard-switch" aria-label="推广数据大屏切换">
+      <a href="../index.html">视频推广数据大屏</a>
+      <a href="../articles/index.html">图文推广数据大屏</a>
+      <a class="active" href="index.html">评论互动时间线</a>
+    </nav>
+    <div class="topbar-right">
+      <span id="sourceBadge" class="badge">数据加载中</span>
+      <span class="update-time">更新于 <b id="updatedAt">--</b></span>
+      <span class="clock" id="clock">--:--:--</span>
+    </div>
+  </header>
+
+  <section class="timeline-status" id="timelineStatus"></section>
+
+  <section class="control-bar" aria-label="时间线筛选">
+    <div class="control-title"><i class="dot dot-cyan"></i>时间线筛选<span>指标、时间线与导出同步</span></div>
+    <div class="filters timeline-filters">
+      <select id="fPlatform" aria-label="平台"><option value="all">全部平台</option></select>
+      <select id="fAccount" aria-label="账号"><option value="all">全部账号</option></select>
+      <select id="fStatus" aria-label="回复状态">
+        <option value="all">全部状态</option>
+        <option value="pending">待官方回复</option>
+        <option value="replied">已官方回复</option>
+      </select>
+      <select id="fPeriod" aria-label="时间范围">
+        <option value="all">上线后全部</option>
+        <option value="1">今日</option>
+        <option value="7">近 7 天</option>
+        <option value="30">近 30 天</option>
+      </select>
+      <input id="fSearch" type="search" placeholder="搜索作品、评论或回复…" aria-label="搜索时间线">
+      <button class="reset-filters" id="resetFilters" type="button">重置</button>
+      <button class="export-data" id="exportData" type="button">导出数据</button>
+    </div>
+    <div class="filter-summary" id="filterSummary"></div>
+  </section>
+
+  <section class="timeline-kpis" id="kpiStrip"></section>
+
+  <section class="grid-row timeline-overview">
+    <article class="card span-4 api-card">
+      <div class="card-title"><i class="dot dot-green"></i>今日采集操作 预算<span class="card-note">按采集操作共享每日硬上限</span></div>
+      <div id="apiBudget"></div>
+    </article>
+    <article class="card span-8">
+      <div class="card-title"><i class="dot dot-violet"></i>采集操作趋势<span class="card-note">直接 HTTP 请求与浏览器操作次数</span></div>
+      <div class="chart usage-chart" id="chartUsage"></div>
+    </article>
+  </section>
+
+  <section class="card timeline-card">
+    <div class="card-title"><i class="dot dot-gold"></i>评论 → 官方回复
+      <span class="card-note" id="timelineSummary">仅展示功能上线后的新增互动</span>
+    </div>
+    <div class="timeline-list" id="timelineList"></div>
+    <div class="pager" id="pager"></div>
+  </section>
+
+  <footer class="foot" id="provenance">
+    时间口径：评论和回复时间均来自平台；只有用户 ID 与被监测账号一致的回复才计为官方回复。
+  </footer>
+</div>
+<script src="../lib/echarts.min.js"></script>
+<script src="js/app.js?v=20260915-2"></script>
+</body>
+</html>
