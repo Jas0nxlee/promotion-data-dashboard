@@ -102,3 +102,31 @@ class BrowserProviderTests(unittest.TestCase):
         result = self.source.export()
         self.assertTrue(result.complete)
         self.assertEqual("12345678901234567890", result.rows[0]["id"])
+
+    def test_explicit_native_201_response_and_request_identity(self):
+        self.context.route("**/fixture", lambda route: route.fulfill(content_type="text/html", body='''
+            <script>fetch('/fixture-list', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({_log_finder_id:'owner'})})</script>
+        '''))
+        self.context.route("**/fixture-list", lambda route: route.fulfill(status=201, content_type="application/json",
+            body=json.dumps({"errCode": 0, "data": {"rows": [{"id": "one"}], "more": False}})))
+        self.recipe.update({"success_http_statuses": [200, 201], "code_path": "errCode",
+                            "request_identity_path": "_log_finder_id", "request_identity_value": "owner"})
+        self.assertTrue(self.source.pages("contents").complete)
+        self.recipe["request_identity_value"] = "someone_else"
+        with self.assertRaisesRegex(ProviderError, "账号身份"):
+            self.source.pages("contents")
+
+    def test_same_endpoint_from_preview_frame_is_not_the_content_list(self):
+        self.context.route("**/fixture", lambda route: route.fulfill(content_type="text/html", body='''
+            <iframe name="postCard" src="/preview-frame"></iframe><iframe name="content" src="/content-frame"></iframe>
+        '''))
+        def frame(route):
+            kind = "preview" if "preview-frame" in route.request.url else "content"
+            delay = 0 if kind == "preview" else 150
+            route.fulfill(content_type="text/html", body=f'''<script>setTimeout(()=>fetch('/fixture-list',{{method:'POST',headers:{{'Content-Type':'application/json'}},body:JSON.stringify({{kind:'{kind}',userpageType:11}})}}),{delay})</script>''')
+        self.context.route("**/*-frame", frame)
+        self.context.route("**/fixture-list", lambda route: route.fulfill(content_type="application/json",
+            body=json.dumps({"code": 0, "data": {"rows": [{"id": route.request.post_data_json["kind"]}], "more": False}})))
+        self.recipe.update({"request_frame_name": "content", "request_match": {"userpageType": 11}})
+        rows = self.source.pages("contents").rows
+        self.assertEqual([{"id": "content"}], rows)

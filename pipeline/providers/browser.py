@@ -80,7 +80,9 @@ class BrowserSource:
             connected = False
             launched_browser = None
             try:
-                cdp = self.settings.get("cdp_url")
+                # Portable collectors run without taking focus from a user's login
+                # window. Onboarding/export explicitly selects interactive mode.
+                cdp = self.settings.get("cdp_url") if self.settings.get("session_mode") != "portable" else None
                 if cdp:
                     parsed = urlparse(cdp)
                     if parsed.scheme != "http" or parsed.hostname not in ("127.0.0.1", "localhost"):
@@ -157,9 +159,31 @@ class BrowserSource:
                 return
             if urlparse(response.url).path != pattern:
                 return
+            if recipe.get("request_frame_name"):
+                try:
+                    if response.request.frame.name != recipe["request_frame_name"]:
+                        return
+                except Exception:
+                    return
+            if recipe.get("request_match"):
+                try:
+                    body = response.request.post_data_json
+                except Exception:
+                    return
+                if any(pick(body, key) != value for key, value in recipe["request_match"].items()):
+                    return
+            if recipe.get("request_identity_path"):
+                try:
+                    body = response.request.post_data_json
+                    actual = pick(body, recipe["request_identity_path"])
+                except Exception:
+                    actual = None
+                if actual != recipe.get("request_identity_value"):
+                    failures.append("请求中的账号身份与绑定不一致")
+                    return
             self.call_count += 1
-            if response.status != 200:
-                failures.append("平台响应未成功")
+            if response.status not in recipe.get("success_http_statuses", [200]):
+                failures.append(f"平台响应未成功 (HTTP {response.status})")
                 return
             try:
                 # Python JSON retains arbitrarily large integer IDs.
@@ -172,6 +196,8 @@ class BrowserSource:
         try:
             self.budget.consume(self.account["platform"] + ":" + name)
             page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+            if recipe.get("foreground"):
+                page.bring_to_front()
             for selector in recipe.get("open_selectors", []):
                 page.locator(selector).click(timeout=timeout)
             for index in range(max(1, max_pages)):
@@ -183,6 +209,15 @@ class BrowserSource:
                 if failures:
                     raise ProviderError("page_error", failures[0])
                 if not pending:
+                    if os.environ.get("PROMOTION_CAPTURE_FAILURE") == "1":
+                        folder = DATA / "debug"
+                        folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        target = folder / (session_key(self.key) + "-page-failure.png")
+                        try:
+                            page.screenshot(path=str(target))
+                            os.chmod(target, 0o600)
+                        except Exception:
+                            pass
                     raise ProviderError("schema_changed", "未观察到配置的页面数据响应")
                 payload = pending.pop(0)
                 code = pick(payload, recipe.get("code_path", "code"))
@@ -305,5 +340,30 @@ class BrowserSource:
                 return json.loads(response.body())
             except ValueError:
                 raise ProviderError("schema_changed", "原生接口未返回 JSON") from None
+        finally:
+            response.dispose()
+
+    def post_channels_readonly(self, path, payload):
+        allowed_paths = {
+            "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/comment_list",
+            "/micro/content/cgi-bin/mmfinderassistant-bin/post/post_list",
+        }
+        if self.account["platform"] != "wechat_channels" or path not in allowed_paths:
+            raise ProviderError("invalid_operation", "未核验为只读的视频号接口，拒绝请求")
+        self.budget.consume("wechat_channels:" + path, task="platform_http")
+        interval = max(0.2, float(self.settings.get("request_interval", 0.6)))
+        time.sleep(max(0, interval - (time.monotonic() - self.last_request)))
+        self.last_request = time.monotonic()
+        self.call_count += 1
+        response = self.context.request.post("https://channels.weixin.qq.com" + path, data=payload,
+            headers={"Origin": "https://channels.weixin.qq.com", "Referer": "https://channels.weixin.qq.com/platform/interaction/comment"},
+            timeout=25000, max_redirects=0)
+        try:
+            if response.status not in (200, 201):
+                raise ProviderError("http_error", f"视频号读取返回 HTTP {response.status}")
+            try:
+                return json.loads(response.body())
+            except ValueError:
+                raise ProviderError("schema_changed", "视频号读取响应不是 JSON") from None
         finally:
             response.dispose()

@@ -655,6 +655,11 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
     now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
     now_iso = now.isoformat()
     seen = state.get("seen_comments", {})
+    legacy_channel_comments = {
+        str(comment_id) for key, ids in seen.items()
+        if key.startswith("wechat_channels:") and not key.startswith("wechat_channels:export/")
+        for comment_id in ids
+    }
     counts = state.get("content_counts", {})
     poll_at = state.get("content_poll_at", {})
     reply_counts = state.get("root_reply_counts", {})
@@ -732,7 +737,8 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                         should_fetch_replies = (
                             not args.no_replies and root_tracked and current_replies > 0
                             and (previous_replies is None
-                                 or current_replies > int(previous_replies)))
+                                 or current_replies > int(previous_replies)
+                                 or root.get("reply_count_is_lower_bound", False)))
                         if not should_fetch_replies:
                             if previous_replies is None:
                                 reply_counts[reply_key] = current_replies
@@ -758,7 +764,7 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                                             observed_at=now_iso):
                                         scan_totals["official_replies_added"] += 1
                             reply_counts[reply_key] = max(
-                                current_replies, int(previous_replies or 0))
+                                current_replies, len(replies), int(previous_replies or 0))
                         except ApiBudgetExceeded:
                             raise
                         except Exception as exc:
@@ -782,7 +788,9 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                         new_comments = [
                             comment for comment in audience_roots
                             if comment_created_after(
-                                comment, state.get("monitor_started_at"))]
+                                comment, state.get("monitor_started_at"))
+                            and not (platform == "wechat_channels" and cid.startswith("export/")
+                                     and comment["comment_id"] in legacy_channel_comments)]
                     else:
                         new_comments = [
                             comment for comment in audience_roots

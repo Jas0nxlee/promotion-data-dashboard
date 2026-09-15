@@ -38,7 +38,7 @@ def status():
         required = ["profile", "contents"]
         if a["platform"] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}:
             required.extend(["comments", "replies"])
-        missing = [] if config.get("provider") in {"bilibili_creator", "wechat_official"} else [x for x in required if x not in config.get("workflows", {})]
+        missing = [] if config.get("provider") in {"bilibili_creator", "wechat_channels_creator", "wechat_official"} else [x for x in required if x not in config.get("workflows", {})]
         result.append({"account": key, "configured": bool(config),
                        "missing_workflows": missing, "session_saved": (SESSIONS / session_key(key)).is_dir(),
                        "comment_identity_verified": config.get("comment_identity_compatible") is True,
@@ -65,7 +65,7 @@ def login(account, channel):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("command", choices=("status", "login", "probe", "probe-bilibili", "probe-comments", "reconcile", "export-session"))
+    p.add_argument("command", choices=("status", "login", "probe", "probe-bilibili", "probe-comments", "reconcile", "export-session", "bind-channels"))
     p.add_argument("--account", help="platform:account_name")
     p.add_argument("--channel", default="chrome")
     p.add_argument("--bvid")
@@ -84,10 +84,24 @@ def main():
     if args.command == "login":
         login(account, args.channel)
         return
+    if args.command == "bind-channels":
+        if account["platform"] != "wechat_channels":
+            p.error("此绑定命令仅用于视频号")
+        from providers.settings import SettingsStore
+        from providers.wechat_channels import WeChatChannelsProvider
+        store = SettingsStore()
+        settings = store.read()["accounts"].get(args.account, {"channel": args.channel})
+        provider = WeChatChannelsProvider(account, settings)
+        provider.browser.settings["session_mode"] = "interactive"
+        settings = provider.bind_from_login()
+        store.update(args.account, settings)
+        print("已按后台稳定短号绑定视频号身份；尚需验证作品和评论采集")
+        return
     if args.command == "export-session":
         provider = ProviderRegistry().get(account)
         if not hasattr(provider, "browser"):
             p.error("官方接口提供器不使用浏览器会话")
+        provider.browser.settings["session_mode"] = "interactive"
         with provider.browser.session():
             provider._profile()
             path = provider.browser.export_session()

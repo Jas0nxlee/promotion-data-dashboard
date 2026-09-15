@@ -68,6 +68,18 @@ def record_comment(timeline: dict, item: dict, comment: dict, *, observed_at: st
     events = timeline["events"]
     existing = events.get(key)
     if existing:
+        # A stable comment ID can prove the same content across the Channels
+        # legacy numeric-ID and creator export-ID namespaces. Never use names.
+        old_content = existing.get("content_id")
+        new_content = item.get("content_id", "")
+        if (item.get("platform") == "wechat_channels" and new_content.startswith("export/")
+                and old_content and old_content != new_content
+                and existing.get("account_key") == item.get("account_key")):
+            for event in events.values():
+                if (event.get("platform") == item["platform"] and event.get("account_key") == item["account_key"]
+                        and event.get("content_id") == old_content):
+                    event.update({"content_id": new_content, "content_title": item.get("title") or event.get("content_title", ""),
+                                  "content_url": item.get("url", ""), "id_migrated_from": old_content})
         existing.update({
             "content": comment.get("content") or existing.get("content", ""),
             "like": comment.get("like"),

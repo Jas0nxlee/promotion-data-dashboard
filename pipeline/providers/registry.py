@@ -5,6 +5,7 @@ from .mapped import MappedBrowserProvider
 from .bilibili import BilibiliProvider
 from .wechat_mp import WeChatOfficialProvider
 from .bilibili_creator import BilibiliCreatorProvider
+from .wechat_channels import WeChatChannelsProvider
 from api_budget import ApiBudget
 
 PLATFORMS = {"bilibili", "douyin", "wechat_channels", "xiaohongshu", "zhihu", "wechat_service", "wechat_subscription"}
@@ -38,6 +39,9 @@ class ProviderRegistry:
             if not settings:
                 raise ProviderError("setup_required", "账号尚未绑定已核验的后台采集配置，请运行 provider_setup status")
             kind = settings.get("provider", "browser")
+            if kind == "wechat_channels_creator" and platform == "wechat_channels":
+                self.providers[key] = WeChatChannelsProvider(account, settings)
+                return self.providers[key]
             if kind == "bilibili_creator" and platform == "bilibili":
                 self.providers[key] = BilibiliCreatorProvider(account, settings)
                 return self.providers[key]

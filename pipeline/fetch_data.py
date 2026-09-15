@@ -46,7 +46,7 @@ CONFIG_PATH = ROOT / "config" / "accounts.json"
 OUT_PATH = DATA / "dashboard_data.json"
 DEBUG_DIR = DATA / "debug"
 from providers import ProviderRegistry
-from providers.history import retain_known
+from providers.history import retain_known, quarantine_mismatched_channel, channel_namespace_changed, archive_channel_namespace
 from providers.health import record_verification
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -222,6 +222,19 @@ def collect(args, registry=None) -> dict:
             record_verification(key, provider_settings, collected)
             info, vids = collected.profile, collected.records
             entry["data_source"] = collected.source
+            quarantined = quarantine_mismatched_channel(cached_account, cached_videos, info)
+            if quarantined:
+                entry["identity_correction"] = "历史缓存的视频号标识与已核验账号不同，旧记录已隔离，不参与合并"
+                entry["quarantined_record_count"] = len(cached_videos)
+                result["warnings"].append({"account_key": key, "message": entry["identity_correction"]})
+                cached_videos = []
+                cached_account = None
+            if acc["platform"] == "wechat_channels" and channel_namespace_changed(cached_videos, vids):
+                if not collected.complete:
+                    raise RuntimeError("视频号作品标识变更，必须完成全量分页后才能切换；本轮保留旧快照")
+                archive_channel_namespace(cached_account, cached_videos)
+                entry["id_scheme_change"] = "旧数字ID快照已归档；完整目录切换为后台export ID，不按标题猜测合并"
+                result["warnings"].append({"account_key": key, "message": entry["id_scheme_change"]})
             if collected.complete and is_suspicious_drop(len(vids), len(cached_videos)):
                 raise RuntimeError(
                     f"本次仅返回 {len(vids)} 条，较上次 {len(cached_videos)} 条异常下降；"
@@ -237,6 +250,9 @@ def collect(args, registry=None) -> dict:
                 result["warnings"].append({"account_key": key, "message": collected.note})
             entry["followers"] = info.get("followers")
             entry["nickname"] = info.get("nickname")
+            for field in ("verified_account_id", "official_user_id"):
+                if info.get(field):
+                    entry[field] = info[field]
             entry["total_videos"] = len(vids)
             entry["last_success_at"] = run_at
             entry["refreshed_in_run"] = True

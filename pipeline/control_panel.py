@@ -66,9 +66,12 @@ class Panel:
             if not chrome:
                 raise ProviderError("browser_missing", "请安装可见桌面 Chrome/Chromium 后登录")
             subprocess.Popen([chrome, *args], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        current.setdefault("provider", "bilibili_creator" if account["platform"] == "bilibili" else "browser")
+        defaults = {"bilibili": "bilibili_creator", "wechat_channels": "wechat_channels_creator"}
+        current.setdefault("provider", defaults.get(account["platform"], "browser"))
         if account["platform"] == "bilibili":
             current["expected_uid"] = str(account["platform_uid"])
+        if account["platform"] == "wechat_channels":
+            current.setdefault("expected_sph", str(account["platform_uid"]))
         current.update({"channel": "chrome", "cdp_url": f"http://127.0.0.1:{port}"})
         current.setdefault("comment_identity_compatible", False)
         self.store.update(key, current)
@@ -86,6 +89,20 @@ class Panel:
                    "PROMOTION_RUNTIME_DIR": str(RUNTIME if RUNTIME != ROOT else ROOT / ".runtime" / "local"),
                    "PROMOTION_SESSION_DIR": str(SESSIONS), "PROMOTION_PROVIDER_CONFIG": str(PROVIDER_CONFIG)}
             try:
+                settings = self.store.read()["accounts"].get(key, {})
+                if key.startswith("wechat_channels:") and not settings.get("expected_finder_id"):
+                    binding = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "bind-channels", "--account", key],
+                                             env=env, capture_output=True, text=True, timeout=120)
+                    if binding.returncode:
+                        self.jobs[key] = {"running": False, "success": False, "message": "身份绑定未完成，请确认已登录且视频号短号与配置一致"}
+                        return
+                    settings = self.store.read()["accounts"].get(key, {})
+                if settings.get("session_mode") == "portable" and settings.get("cdp_url"):
+                    exported = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "export-session", "--account", key],
+                                              env=env, capture_output=True, text=True, timeout=120)
+                    if exported.returncode:
+                        self.jobs[key] = {"running": False, "success": False, "message": "登录会话更新未完成，请确认独立浏览器中的账号身份"}
+                        return
                 result = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "probe", "--account", key,
                                          "--max-pages", "20", "--output", str(destination)], env=env,
                                         capture_output=True, text=True, timeout=180)
@@ -136,7 +153,7 @@ def handler(panel):
             origin = self.headers.get("Origin", "")
             if not self.host_allowed() or self.headers.get("X-CSRF-Token") != panel.token or origin not in {
                     f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"}:
-                return self.respond({"error": "request rejected"}, 403)
+                return self.respond({"error": "页面会话已更新或请求来源不符，请刷新本页面后重试"}, 403)
             try:
                 size = int(self.headers.get("Content-Length", "0"))
                 if not 0 < size <= 200000:
