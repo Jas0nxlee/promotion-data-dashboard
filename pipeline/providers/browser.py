@@ -249,6 +249,8 @@ class BrowserSource:
                     end = more in (False, 0, "0")
                 elif recipe.get("total_path"):
                     total = number(pick(payload, recipe["total_path"]))
+                    if total is None and recipe.get("total_first_page") and envelopes:
+                        total = number(pick(envelopes[0], recipe["total_path"]))
                     if total is None:
                         raise ProviderError("schema_changed", "总数缺失")
                     id_path = recipe.get("row_id_path")
@@ -273,7 +275,10 @@ class BrowserSource:
                     page.locator(recipe["next_selector"]).click(timeout=timeout)
                 elif recipe.get("scroll"):
                     self.budget.consume(self.account["platform"] + ":" + name)
-                    page.mouse.wheel(0, 1600)
+                    if recipe.get("scroll_container"):
+                        page.locator(recipe["scroll_container"]).evaluate("el => { el.scrollTop = el.scrollHeight; }")
+                    else:
+                        page.mouse.wheel(0, 1600)
                 else:
                     raise ProviderError("setup_required", "存在下一页但未配置翻页操作")
             raise ProviderError("incomplete_pagination", "分页未完成")

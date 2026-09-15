@@ -66,7 +66,7 @@ class Panel:
             if not chrome:
                 raise ProviderError("browser_missing", "请安装可见桌面 Chrome/Chromium 后登录")
             subprocess.Popen([chrome, *args], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        defaults = {"bilibili": "bilibili_creator", "wechat_channels": "wechat_channels_creator"}
+        defaults = {"bilibili": "bilibili_creator", "wechat_channels": "wechat_channels_creator", "xiaohongshu": "xiaohongshu_creator"}
         current.setdefault("provider", defaults.get(account["platform"], "browser"))
         if account["platform"] == "bilibili":
             current["expected_uid"] = str(account["platform_uid"])

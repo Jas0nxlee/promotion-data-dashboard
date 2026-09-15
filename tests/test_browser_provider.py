@@ -91,6 +91,20 @@ class BrowserProviderTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, "重复页面"):
             self.source.pages("contents")
 
+    def test_first_page_total_with_nested_scroll_container(self):
+        self.context.route("**/fixture", lambda route: route.fulfill(content_type="text/html", body='''
+            <div id="scroll" style="height:100px;overflow:auto" onscroll="load()"><div style="height:1000px"></div></div>
+            <script>let p=0;async function load(){await fetch('/fixture-list?p='+(++p))};load()</script>'''))
+        self.recipe.pop("has_more_path")
+        self.recipe.pop("next_selector")
+        self.recipe.update(total_path="data.total", total_first_page=True, row_id_path="id",
+                           scroll=True, scroll_container="#scroll")
+        self.responses = [{"code": 0, "data": {"rows": [{"id": "1"}], "total": 2}},
+                          {"code": 0, "data": {"rows": [{"id": "2"}]}}]
+        result = self.source.pages("contents")
+        self.assertTrue(result.complete)
+        self.assertEqual(2, result.count)
+
     def test_browser_downloads_csv_and_checks_export_count(self):
         self.context.route("**/fixture-export", lambda route: route.fulfill(content_type="text/html", body='''
             <span id="total">1</span><button id="export" onclick="downloadFile()">导出</button>

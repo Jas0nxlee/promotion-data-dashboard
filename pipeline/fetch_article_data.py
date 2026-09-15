@@ -1320,7 +1320,7 @@ def collect(args):
     result["latest_success_at"] = max(success_times) if success_times else None
     finalize_snapshot(result, "article")
     print(f"完成：{len(result['articles'])} 篇，公开请求 {public_client.call_count} 次，"
-          f"浏览器文章请求 {toutiao.request_count} 次，API 请求 {api_client.call_count} 次")
+          f"浏览器文章请求 {toutiao.request_count} 次，平台直采请求 {api_client.call_count} 次")
     return result
 
 
