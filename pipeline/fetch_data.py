@@ -234,6 +234,8 @@ def collect(args, registry=None) -> dict:
                 entry["account_replacement_id"] = cached_account["account_replacement_id"]
             quarantined = quarantine_mismatched_channel(cached_account, cached_videos, info)
             if quarantined:
+                if not collected.complete:
+                    raise RuntimeError("视频号身份标识冲突，必须完成全量采集后才能切换；本轮保留旧快照")
                 entry["identity_correction"] = "历史缓存的视频号标识与已核验账号不同，旧记录已隔离，不参与合并"
                 entry["quarantined_record_count"] = len(cached_videos)
                 result["warnings"].append({"account_key": key, "message": entry["identity_correction"]})

@@ -87,6 +87,24 @@ class ReplacementTests(unittest.TestCase):
         self.assertEqual([content(1)], history.retire_replaced_comment_contents([content(1)], state, {}, self.old))
         self.assertEqual([content(1)], state['discovered_contents'])
 
+    def test_partial_channel_identity_conflict_preserves_old_catalog(self):
+        key = 'wechat_channels:测试'
+        account = {**ACCOUNT, 'platform': 'wechat_channels', 'platform_uid': 'sph_verified'}
+        self.config.write_text(json.dumps({'accounts': [account]}))
+        self.old['accounts'] = [{**account, 'account_key': key, 'official_user_id': 'v2_old@finder'}]
+        self.old['videos'] = [{**r, 'platform': 'wechat_channels', 'account_key': key} for r in self.old['videos']]
+        self.out.write_text(json.dumps(self.old))
+        profile = {'verified_account_id': 'sph_verified', 'official_user_id': 'v2_new@finder'}
+        rows = [{**video('export/new'), 'platform': 'wechat_channels', 'account_key': key}]
+        partial = self.collect(complete=False, profile=profile, rows=rows)
+        self.assertEqual('stale', partial['accounts'][0]['status'])
+        self.assertEqual('v2_old@finder', partial['accounts'][0]['official_user_id'])
+        self.assertEqual(32, len(partial['videos']))
+        self.assertEqual(self.old, json.loads(self.out.read_text()))
+        complete = self.collect(complete=True, profile=profile, rows=rows)
+        self.assertEqual('ok', complete['accounts'][0]['status'])
+        self.assertEqual(['export/new'], [r['video_id'] for r in complete['videos']])
+
     def test_marker_survives_subsequent_success_and_failure(self):
         first = self.collect()
         self.out.write_text(json.dumps(first))
