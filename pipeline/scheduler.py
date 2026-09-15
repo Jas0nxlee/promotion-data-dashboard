@@ -16,8 +16,9 @@ from pathlib import Path
 from snapshot_utils import atomic_write_json
 
 
+from runtime import DATA, is_test
 ROOT = Path(__file__).resolve().parent.parent
-STATE_PATH = ROOT / "data" / "scheduler_state.json"
+STATE_PATH = DATA / "scheduler_state.json"
 CN_TZ = timezone(timedelta(hours=8))
 
 
@@ -48,7 +49,11 @@ def command(script: str, env_name: str) -> list[str]:
 
 def run(name: str, argv: list[str]) -> int:
     log(f"开始{name}：{' '.join(shlex.quote(part) for part in argv)}")
-    result = subprocess.run(argv, cwd=ROOT, check=False)
+    try:
+        result = subprocess.run(argv, cwd=ROOT, check=False, timeout=int(os.environ.get("COLLECTION_TIMEOUT_SECONDS", "1800")))
+    except subprocess.TimeoutExpired:
+        log(f"{name}超过执行时限")
+        return 124
     log(f"结束{name}：exit={result.returncode}")
     return result.returncode
 
@@ -66,7 +71,7 @@ def run_data_collection() -> dict:
 def run_comment_cycle() -> dict:
     monitor = run("评论检查", command("comment_monitor.py", "COMMENT_MONITOR_ARGS"))
     # 即使本轮评论接口失败，也尝试重发队列里上一轮未发送的邮件。
-    mail = run("邮件发送", [sys.executable, str(ROOT / "pipeline" / "send_comment_alerts.py")])
+    mail = 0 if is_test() else run("邮件发送", [sys.executable, str(ROOT / "pipeline" / "send_comment_alerts.py")])
     return {"monitor": monitor, "mail": mail}
 
 

@@ -6,7 +6,7 @@
 定时检查所有平台内容的新评论，发现新评论时发送邮件提醒。
 
 覆盖平台：
-  - 可抓评论正文：抖音、B站、小红书、视频号（通过 TikHub 评论接口）
+  - 可抓评论正文：抖音、B站、小红书、视频号（通过授权平台 provider）
   - 仅评论数检测：CSDN、知乎、今日头条、搜狐、百家号、公众号等（无公开评论正文接口）
 
 工作方式（尽量简单）：
@@ -45,14 +45,16 @@ except ImportError:
 
 from snapshot_utils import atomic_write_json
 
+from runtime import DATA, load_env as load_dotenv
+from providers import ProviderRegistry
 ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = ROOT / "data"
+DATA_DIR = DATA
 VIDEO_DATA = DATA_DIR / "dashboard_data.json"
 ARTICLE_DATA = DATA_DIR / "article_dashboard_data.json"
 STATE_PATH = DATA_DIR / "comment_state.json"
 VIDEO_ACCOUNTS = ROOT / "config" / "accounts.json"
 ARTICLE_ACCOUNTS = ROOT / "config" / "article_accounts.json"
-BASE_URL = "https://api.tikhub.io"
+
 CN_TZ = timezone(timedelta(hours=8))
 MONITOR_STATE_VERSION = 2
 
@@ -67,25 +69,25 @@ PLATFORM_LABEL = {
     "toutiao": "今日头条", "sohu": "搜狐", "xiaohongshu": "小红书",
 }
 
-# 可通过 TikHub 评论接口抓正文的平台 -> 接口配置
+# 可通过授权平台 provider抓正文的平台 -> 接口配置
 #   adapter: 平台标识
 #   kind: 内容ID类型 (用于构造请求)
 #   type: 内容类型标签
 COMMENT_API_PLATFORMS = {
     "douyin": {
-        "path": "/api/v1/douyin/app/v3/fetch_video_comments",
+        "path": "douyin.fetch_video_comments",
         "method": "get",
         "params": lambda item: {"aweme_id": item["content_id"], "cursor": 0, "count": 20},
         "type": "视频",
     },
     "bilibili": {
-        "path": "/api/v1/bilibili/app/fetch_video_comments",
+        "path": "bilibili.fetch_video_comments",
         "method": "get",
         "params": lambda item: {"bv_id": item["content_id"], "mode": 3, "next_offset": 1, "ps": 20},
         "type": "视频",
     },
     "xiaohongshu": {
-        "path": "/api/v1/xiaohongshu/app_v2/get_note_comments",
+        "path": "xiaohongshu.get_note_comments",
         "method": "get",
         "params": lambda item: {"note_id": item["content_id"],
                                 "cursor": "", "index": 0,
@@ -93,7 +95,7 @@ COMMENT_API_PLATFORMS = {
         "type": "笔记",
     },
     "wechat_channels": {
-        "path": "/api/v1/wechat_channels/v2/fetch_video_comments",
+        "path": "wechat_channels.fetch_video_comments",
         "method": "post",
         "params": lambda item: {"object_id": item["content_id"], "last_buffer": "",
                                 "comment_id": "", "raw": False},
@@ -102,14 +104,6 @@ COMMENT_API_PLATFORMS = {
 }
 
 
-def load_dotenv():
-    env_file = ROOT / ".env"
-    if env_file.exists():
-        for line in env_file.read_text(encoding="utf-8").splitlines():
-            line = line.strip()
-            if line and not line.startswith("#") and "=" in line:
-                k, v = line.split("=", 1)
-                os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
 
 
 def to_int(v, default=None):
@@ -136,58 +130,10 @@ def dig(obj, *paths, default=None):
     return default
 
 
-class TikHubClient:
-    """极简 TikHub 客户端，复用现有采集脚本的调用方式。"""
-
-    def __init__(self, api_key: str, min_interval: float = 0.6):
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-        })
-        self.min_interval = min_interval
-        self.base_url = os.environ.get("TIKHUB_BASE_URL", BASE_URL).rstrip("/")
-        self._last_call = 0.0
-        self.call_count = 0
-
-    def _throttle(self):
-        wait = self.min_interval - (time.time() - self._last_call)
-        if wait > 0:
-            time.sleep(wait)
-        self._last_call = time.time()
-
-    def request(self, method, path, params=None, payload=None, timeout=45, retries=3):
-        url = f"{self.base_url}{path}"
-        last_error = "未知错误"
-        for attempt in range(1, retries + 1):
-            self._throttle()
-            self.call_count += 1
-            try:
-                resp = self.session.request(
-                    method, url, params=params, json=payload, timeout=timeout)
-                if resp.status_code == 200:
-                    return resp.json()
-                last_error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-                if resp.status_code not in {408, 429, 500, 502, 503, 504}:
-                    break
-            except requests.RequestException as exc:
-                last_error = str(exc)
-            if attempt < retries:
-                time.sleep(min(2 ** attempt, 8))
-        raise RuntimeError(last_error)
-
-    def get(self, path, **kwargs):
-        kwargs.pop("tag", None)
-        return self.request("GET", path, params=kwargs.pop("params", None), **kwargs)
-
-    def post(self, path, **kwargs):
-        kwargs.pop("tag", None)
-        return self.request("POST", path, params=kwargs.pop("params", None),
-                            payload=kwargs.pop("payload", None), **kwargs)
 
 
 def unwrap_data(obj):
-    """解开 TikHub 外层包装，找到真正的 data 节点。"""
+    """解开 历史外层包装，找到真正的 data 节点。"""
     cur = obj
     for _ in range(5):
         if not isinstance(cur, dict) or not isinstance(cur.get("data"), dict):
@@ -317,114 +263,27 @@ def _deepest_data(payload):
 
 
 def discover_latest_contents(client, existing):
-    """每小时只拉各账号第一页作品，发现每日大屏刷新后的新内容。"""
-    known = {(item["platform"], item["content_id"]) for item in existing}
+    """Reuse the same provider for hourly discovery; no independent paid fallback."""
+    known = {(x["platform"], x["content_id"]) for x in existing}
     additions, errors = [], []
-    video_snapshot = load_json(VIDEO_DATA) or {}
-    snapshot_accounts = {
-        (item.get("platform"), item.get("account_name")): item
-        for item in video_snapshot.get("accounts", [])
-    }
-    configs = []
     for path in (VIDEO_ACCOUNTS, ARTICLE_ACCOUNTS):
-        payload = load_json(path) or {}
-        configs.extend(payload.get("accounts", []))
-
-    for account in configs:
-        platform = account.get("platform")
-        if platform not in COMMENT_API_PLATFORMS:
-            continue
-        try:
-            rows = []
-            if platform == "bilibili":
-                uid = str(account.get("platform_uid") or "")
-                response = client.request(
-                    "GET", "/api/v1/bilibili/app/fetch_user_videos",
-                    params={"user_id": uid, "post_filter": "archive", "page": 1, "ps": 50})
-                data = _deepest_data(response)
-                for raw in dig(data, "item", "items", "list.vlist", "vlist", default=[]) or []:
-                    content_id = str(dig(raw, "bvid", "param", "aid", default=""))
-                    if not content_id:
+        for account in (load_json(path) or {}).get("accounts", []):
+            if account.get("platform") not in COMMENT_API_PLATFORMS:
+                continue
+            try:
+                result = client.discover(account)
+                for raw in result.records:
+                    cid = str(raw.get("video_id") or raw.get("article_id") or "")
+                    identity = (account["platform"], cid)
+                    if not cid or identity in known:
                         continue
-                    rows.append(_account_record(
-                        account, content_id,
-                        aid=dig(raw, "aid", "param", default=""),
-                        title=dig(raw, "title", "name", default=""),
-                        url=f"https://www.bilibili.com/video/{content_id}",
-                        published_at=epoch_to_iso(dig(raw, "created", "pubdate")),
-                        comment_count=dig(raw, "stat.reply", "reply")))
-
-            elif platform == "douyin":
-                # 复用主采集器的精确名称搜索回退，避免公开抖音号资料接口
-                # 单点 400 导致新内容发现中断。
-                from fetch_data import DouyinAdapter
-                adapter = DouyinAdapter(client)
-                info = adapter.resolve_user(account)
-                videos = adapter.fetch_videos(info["sec_user_id"], max_pages=1)
-                for raw in videos:
-                    content_id = str(raw.get("video_id") or "")
-                    if not content_id:
-                        continue
-                    rows.append(_account_record(
-                        account, content_id,
-                        title=raw.get("title") or "",
-                        url=raw.get("url") or f"https://www.douyin.com/video/{content_id}",
+                    known.add(identity)
+                    additions.append(_account_record(account, cid, aid=raw.get("aid", ""),
+                        title=raw.get("title", ""), url=raw.get("url", ""),
                         published_at=raw.get("published_at"),
-                        comment_count=dig(raw, "stats.comment")))
-
-            elif platform == "wechat_channels":
-                cached = snapshot_accounts.get((platform, account.get("account_name")), {})
-                username = str(cached.get("platform_uid") or account.get("platform_uid") or "")
-                if username.startswith("sph"):
-                    resolved = client.request(
-                        "POST", "/api/v1/wechat_channels/v2/fetch_channel_id_to_username",
-                        payload={"channel_id": username, "raw": False})
-                    username = str(dig(_deepest_data(resolved), "username", "finder_username") or "")
-                if not username:
-                    raise RuntimeError("无法解析视频号 username")
-                response = client.request(
-                    "POST", "/api/v1/wechat_channels/v2/fetch_user_videos",
-                    payload={"username": username, "last_buffer": "", "raw": False})
-                data = _deepest_data(response)
-                for raw in dig(data, "videos", "items", "list", "objects", default=[]) or []:
-                    content_id = str(dig(raw, "object_id", "objectId", "id", default=""))
-                    if not content_id:
-                        continue
-                    rows.append(_account_record(
-                        account, content_id,
-                        title=dig(raw, "title", "description", "desc", default=""),
-                        url=dig(raw, "share_url", "shareUrl", "url", default=""),
-                        published_at=epoch_to_iso(
-                            dig(raw, "create_time", "createtime", "createTime")),
-                        comment_count=dig(raw, "comment_count", "commentCount")))
-
-            elif platform == "xiaohongshu":
-                user_id = str(account.get("platform_uid") or "")
-                response = client.request(
-                    "GET", "/api/v1/xiaohongshu/app_v2/get_user_posted_notes",
-                    params={"user_id": user_id, "cursor": ""})
-                data = _deepest_data(response)
-                for raw in data.get("notes") or []:
-                    content_id = str(raw.get("id") or "")
-                    if not content_id:
-                        continue
-                    rows.append(_account_record(
-                        account, content_id,
-                        title=raw.get("title") or raw.get("display_title") or "无标题笔记",
-                        url=f"https://www.xiaohongshu.com/explore/{content_id}",
-                        published_at=epoch_to_iso(raw.get("create_time")),
-                        comment_count=raw.get("comments_count")))
-
-            for row in rows:
-                identity = (row["platform"], row["content_id"])
-                if identity in known:
-                    continue
-                known.add(identity)
-                additions.append(row)
-        except Exception as exc:
-            errors.append(
-                f"{PLATFORM_LABEL.get(platform, platform)} {account.get('account_name', '')} "
-                f"新内容发现失败: {compact_error(exc, 120)}")
+                        comment_count=raw.get("stats", {}).get("comment")))
+            except Exception as exc:
+                errors.append(f"{account['account_name']} 新作品发现失败: {compact_error(exc, 180)}")
     return existing + additions, additions, errors
 
 
@@ -719,7 +578,7 @@ def check_comments(client, contents, args):
             elif platform in COMMENT_API_PLATFORMS \
                     and not (getattr(args, "dry_run", False)
                              or getattr(args, "no_api", False)):
-                errors.append(f"{label}: 未配置 TIKHUB_API_KEY，无法检查评论明细")
+                errors.append(f"{label}: 未配置数据 provider，无法检查评论明细")
             # ---- 仅计数的平台：对比评论数增长 ----
             else:
                 current = item.get("stats_comment")
@@ -750,19 +609,19 @@ def check_comments(client, contents, args):
 
 REPLY_API_PLATFORMS = {
     "douyin": {
-        "path": "/api/v1/douyin/app/v3/fetch_video_comment_replies",
+        "path": "douyin.fetch_video_comment_replies",
         "method": "get",
     },
     "bilibili": {
-        "path": "/api/v1/bilibili/app/fetch_reply_detail",
+        "path": "bilibili.fetch_reply_detail",
         "method": "get",
     },
     "xiaohongshu": {
-        "path": "/api/v1/xiaohongshu/app_v2/get_note_sub_comments",
+        "path": "xiaohongshu.get_note_sub_comments",
         "method": "get",
     },
     "wechat_channels": {
-        "path": "/api/v1/wechat_channels/v2/fetch_video_comments",
+        "path": "wechat_channels.fetch_video_comments",
         "method": "post",
     },
 }
@@ -973,6 +832,9 @@ def _fetch_pages(client, platform, endpoint, initial_params, max_pages, parent_i
 
 def fetch_all_comments(client, platform, item, max_pages=200, include_replies=True):
     """完整分页拉取一级评论，并按回复数继续完整拉取二级回复。"""
+    if hasattr(client, "fetch_comments"):
+        return client.fetch_comments(platform, item, max_pages, include_replies)
+    # Legacy response-parser contract used only by offline fixtures.
     roots, pages = _fetch_pages(
         client, platform, COMMENT_API_PLATFORMS[platform],
         _initial_root_request(platform, item), max_pages)
@@ -1211,7 +1073,7 @@ def main():
     ap.add_argument("--max-age-days", type=int, default=0,
                     help="只看最近 N 天内发布的内容；0 表示全部（默认 0）")
     ap.add_argument("--no-api", action="store_true",
-                    help="不调用 TikHub 评论接口，仅做评论数对比（无正文）")
+                    help="不调用 平台评论数据源，仅做评论数对比（无正文）")
     args = ap.parse_args()
 
     load_dotenv()
@@ -1226,12 +1088,7 @@ def main():
 
     client = None
     if not args.dry_run and not args.no_api:
-        api_key = os.environ.get("TIKHUB_API_KEY", "").strip()
-        if not api_key:
-            print("[提示] 未设置 TIKHUB_API_KEY，仅做评论数对比（无法抓正文）",
-                  file=sys.stderr)
-        else:
-            client = TikHubClient(api_key)
+        client = ProviderRegistry()
 
     discovery_errors = []
     if client and not args.no_discovery:

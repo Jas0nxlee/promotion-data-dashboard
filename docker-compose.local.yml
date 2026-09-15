@@ -1,0 +1,32 @@
+# Standalone local profile. Never combine with docker-compose.yml.
+name: ${PROMOTION_DEV_ID:?Set a unique PROMOTION_DEV_ID for this worktree}
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "127.0.0.1:${PROMOTION_DEV_PORT:-18081}:8080"
+    volumes:
+      - ./web:/www:ro
+      - ./.runtime/local/web/data:/www/data:ro
+      - ./.runtime/local/web/articles/data:/www/articles/data:ro
+    read_only: true
+    tmpfs: [/tmp]
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    environment:
+      PROMOTION_TEST_MODE: "1"
+      PROMOTION_RUNTIME_DIR: /isolated
+      PROMOTION_SESSION_DIR: /sessions
+      PROMOTION_PROVIDER_CONFIG: /config-private/providers.json
+    volumes:
+      - ./.runtime/local:/isolated
+      - ./.runtime/sessions:/sessions
+      - ./.runtime:/config-private:ro
+    # An explicit one-shot invocation is required; no scheduler or email service.
+    command: [python, pipeline/provider_setup.py, status]
+    init: true
+    shm_size: 1gb

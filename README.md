@@ -2,6 +2,8 @@
 
 面向多平台推广账号的数据采集、质量检查、可视化和评论提醒项目。
 
+当前分支正在迁移至平台直采：公共层和入口已完成改造，真实后台流程仍需逐账号登录校准，暂未达到全平台上线条件。开发测试请使用 [本地隔离开发说明](docs/LOCAL_DEVELOPMENT.md)，不要直接运行下方生产 Compose。
+
 项目包含两套静态大屏：
 
 - 视频推广数据大屏：B站、抖音、视频号。
@@ -23,7 +25,7 @@
 ## 运行架构
 
 ```text
-TikHub / 公开网页 / 今日头条浏览器采集 / 人工导入
+授权平台 provider / 公开网页 / 今日头条浏览器采集 / 人工导入
                          │
                          ▼
        fetch_data.py / fetch_article_data.py
@@ -78,12 +80,9 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-至少需要配置 TikHub 和 SMTP：
+首先按照本地开发说明配置已核验的账号 provider 与独立会话。只有正式启用邮件时需要 SMTP：
 
 ```env
-TIKHUB_API_KEY=你的令牌
-TIKHUB_BASE_URL=https://api.tikhub.io
-
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USERNAME=发件账号
@@ -259,9 +258,9 @@ python3 pipeline/fetch_article_data.py --mock
 
 | 平台 | 主要数据源 | 重要边界 |
 | --- | --- | --- |
-| B站、抖音、视频号 | TikHub | 部分指标可能不公开；B站详情补全调用量较大 |
+| B站、抖音、视频号 | 授权后台 provider；B站公开详情补充 | 后台流程需登录校准；未接通时保留旧快照 |
 | CSDN、电子发烧友、百家号、搜狐 | 公开主页 | 页面变化、访问限制或历史范围可能导致部分覆盖 |
-| 知乎、小红书、微信公众号 | TikHub | 阅读量、公众号互动等取决于接口权限和额度 |
+| 知乎、小红书、微信公众号 | 授权后台或公众号官方 API provider | 需账号权限与字段映射；当前仍有接入待办 |
 | 今日头条 | Playwright 访问公开作者页 | 需要 Chromium；访问校验或页面变化可能导致失败 |
 | 其他后台数据 | `data/article_manual_input.json` | 由人工导入内容决定覆盖范围 |
 

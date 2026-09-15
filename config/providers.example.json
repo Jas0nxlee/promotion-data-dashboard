@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "note": "结构示例，响应路径与字段须登录后核验；不代表任何账号已经接通。实际配置存放 .runtime/providers.json。",
+  "accounts": {
+    "bilibili:望获OS": {
+      "provider": "browser",
+      "channel": "chrome",
+      "profile": {
+        "expected_id": "3537118127197066",
+        "id_path": "mid",
+        "name_path": "uname"
+      },
+      "comment_identity_compatible": false,
+      "workflows": {
+        "profile": {
+          "url": "https://www.bilibili.com/",
+          "response_path": "/x/web-interface/nav",
+          "rows_path": "data",
+          "single": true
+        },
+        "contents": {
+          "url": "https://member.bilibili.com/platform/upload-manager/article",
+          "response_path": "/REPLACE_WITH_OBSERVED_PATH",
+          "rows_path": "REPLACE_WITH_OBSERVED_ROWS_PATH",
+          "total_path": "REPLACE_WITH_OBSERVED_TOTAL_PATH",
+          "row_id_path": "REPLACE_WITH_OBSERVED_ID_PATH",
+          "next_selector": "REPLACE_WITH_VERIFIED_NEXT_SELECTOR"
+        }
+      },
+      "content_mapping": {
+        "fields": {"id": "bvid", "title": "title", "published_at": "pubdate", "url": "url"},
+        "stats": {},
+        "definitions": {}
+      },
+      "comment_mapping": {},
+      "reply_mapping": {}
+    }
+  }
+}

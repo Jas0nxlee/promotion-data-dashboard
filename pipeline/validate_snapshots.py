@@ -9,6 +9,7 @@ from pathlib import Path
 from snapshot_utils import finalize_snapshot
 
 
+from runtime import DATA, is_test
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -50,8 +51,8 @@ def check(path: Path, kind: str) -> tuple[dict, list[str]]:
 
 def main():
     parser = argparse.ArgumentParser(description="校验视频与图文大屏数据快照")
-    parser.add_argument("--video", default=str(ROOT / "data" / "dashboard_data.json"))
-    parser.add_argument("--article", default=str(ROOT / "data" / "article_dashboard_data.json"))
+    parser.add_argument("--video", default=str(DATA / "dashboard_data.json"))
+    parser.add_argument("--article", default=str(DATA / "article_dashboard_data.json"))
     args = parser.parse_args()
     failures = []
     for path, kind in ((Path(args.video), "video"), (Path(args.article), "article")):

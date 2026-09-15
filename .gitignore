@@ -3,6 +3,8 @@
 .serverenv
 .venv/
 .venv-win/
+.runtime/
+data/sessions/
 
 # Python / macOS
 __pycache__/

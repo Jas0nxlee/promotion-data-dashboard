@@ -14,3 +14,5 @@ data/comment_alert.json
 data/comment_state.json
 data/scheduler_state.json
 output
+.runtime
+data/sessions

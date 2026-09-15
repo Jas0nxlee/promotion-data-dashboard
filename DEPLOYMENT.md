@@ -1,5 +1,7 @@
 # Docker 部署说明
 
+当前迁移分支尚未完成真实后台接入验收，不直接替换生产服务。工作树测试使用 [独立开发说明](docs/LOCAL_DEVELOPMENT.md) 和单独的 `docker-compose.local.yml`。
+
 ## 架构
 
 - `frontend`：BusyBox `httpd`，只提供静态页面，默认监听宿主机 `8080`。
@@ -15,7 +17,7 @@
 
 邮件采用至少一次投递：提醒先原子写入持久化队列，再推进评论状态；SMTP 成功后才逐封移出。进程在 SMTP 已接收邮件、但队列尚未来得及落盘的极端窗口中可能导致重复邮件，但不会主动删除未确认成功的提醒。
 
-完整分页调用量较大。生产环境使用限制内容数、发布时间范围、翻页上限和关闭二级回复的组合参数；确需恢复全量或二级回复时，应先重新评估 TikHub 当前接口价格和预算。
+完整分页调用量较大。生产环境使用限制内容数、发布时间范围、翻页上限和关闭二级回复的组合参数；确需恢复全量或二级回复时，应先实测各平台会话稳定性、请求频率和全量扫描耗时。
 
 ## 配置
 
@@ -28,8 +30,9 @@ chmod 600 .env
 
 必填：
 
-- `TIKHUB_API_KEY`：视频、知乎、公众号、小红书和正文评论接口使用。
-- `TIKHUB_BASE_URL`：TikHub API 根地址；中国大陆服务器可按服务商当前说明改用大陆域名。
+- `PROMOTION_PROVIDER_CONFIG`：已核验的账号 provider 配置。
+- `PROMOTION_SESSION_DIR`：独立且不入库的登录会话目录。
+- 官方公众号数据源另需配置该账号授权令牌环境变量。
 - `SMTP_HOST`、`SMTP_FROM`：邮件服务器和发件地址。
 - SMTP 需要认证时，同时填写 `SMTP_USERNAME`、`SMTP_PASSWORD`。
 - 587/STARTTLS 使用 `SMTP_SSL=false`、`SMTP_STARTTLS=true`；465/SSL 使用 `SMTP_SSL=true`、`SMTP_STARTTLS=false`。

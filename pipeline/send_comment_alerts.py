@@ -15,19 +15,11 @@ from pathlib import Path
 from snapshot_utils import atomic_write_json
 
 
+from runtime import DATA, is_test, load_env as load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
-ALERT_PATH = ROOT / "data" / "comment_alert.json"
+ALERT_PATH = DATA / "comment_alert.json"
 
 
-def load_dotenv() -> None:
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def as_bool(name: str, default: bool = False) -> bool:
@@ -87,6 +79,8 @@ def save_queue(path: Path, payload: dict) -> None:
 
 
 def connect(config: dict):
+    if is_test():
+        raise RuntimeError("测试模式禁止连接 SMTP，队列仅保留在本地")
     context = ssl.create_default_context()
     if config["use_ssl"]:
         client = smtplib.SMTP_SSL(
