@@ -97,9 +97,10 @@ class WeChatChannelsProvider:
                 raise ProviderError("identity_mismatch", "登录的视频号短号与绑定不同（区分大小写）")
             followers = number(page.locator(".second-info .finder-info-num").inner_text())
             homepage_total = number(page.locator(".finder-info-num").first.inner_text())
-            return {"nickname": self.account["account_name"], "followers": followers,
-                    "homepage_total": homepage_total,
-                    "verified_account_id": actual, "official_user_id": self.settings.get("expected_finder_id")}
+            self.verified_profile = {"nickname": self.account["account_name"], "followers": followers,
+                                     "homepage_total": homepage_total,
+                                     "verified_account_id": actual, "official_user_id": self.settings.get("expected_finder_id")}
+            return self.verified_profile
         finally:
             page.close()
 

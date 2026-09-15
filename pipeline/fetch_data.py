@@ -46,7 +46,8 @@ CONFIG_PATH = ROOT / "config" / "accounts.json"
 OUT_PATH = DATA / "dashboard_data.json"
 DEBUG_DIR = DATA / "debug"
 from providers import ProviderRegistry
-from providers.history import retain_known, quarantine_mismatched_channel, channel_namespace_changed, archive_channel_namespace
+from providers.history import (retain_known, quarantine_mismatched_channel, channel_namespace_changed,
+                               archive_channel_namespace, archive_authorized_replacement)
 from providers.health import record_verification
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -198,6 +199,7 @@ def collect(args, registry=None) -> dict:
         cached_videos = [v for v in previous.get("videos", []) if v.get("account_key") == key]
         cached_account = next((a for a in previous.get("accounts", [])
                                if a.get("account_key") == key), None)
+        original_cached_account, original_cached_videos = cached_account, cached_videos
         only = set(getattr(args, "only", None) or [])
         if only and not ({key, acc["platform"], acc["account_name"]} & only):
             entry = dict(cached_account or {**acc, "account_key": key, "status": "pending"})
@@ -222,6 +224,14 @@ def collect(args, registry=None) -> dict:
             record_verification(key, provider_settings, collected)
             info, vids = collected.profile, collected.records
             entry["data_source"] = collected.source
+            replacement_id = archive_authorized_replacement(
+                acc, cached_account, cached_videos, collected, provider_settings)
+            if replacement_id:
+                entry["account_replacement_id"] = replacement_id
+                entry["replaced_record_count"] = len(cached_videos)
+                cached_videos, cached_account = [], None
+            elif cached_account and cached_account.get("account_replacement_id"):
+                entry["account_replacement_id"] = cached_account["account_replacement_id"]
             quarantined = quarantine_mismatched_channel(cached_account, cached_videos, info)
             if quarantined:
                 entry["identity_correction"] = "历史缓存的视频号标识与已核验账号不同，旧记录已隔离，不参与合并"
@@ -265,9 +275,15 @@ def collect(args, registry=None) -> dict:
             result["videos"].extend(vids)
             print(f"    作品数: {len(vids)}")
         except Exception as e:
+            # Archival is preparatory: a later failure must preserve the entire
+            # prior snapshot, including its identity and retirement marker.
+            cached_account, cached_videos = original_cached_account, original_cached_videos
+            for field in ("account_replacement_id", "replaced_record_count", "identity_correction",
+                          "quarantined_record_count", "id_scheme_change"):
+                entry.pop(field, None)
             record_verification(key, provider_settings, error=e)
             message = compact_error(e)
-            if cached_account and cached_videos:
+            if cached_account:
                 # 单账号瞬时失败时保留上一次完整快照，避免本轮采集把线上大屏数据清空。
                 entry.update({
                     "followers": cached_account.get("followers"),
@@ -279,6 +295,9 @@ def collect(args, registry=None) -> dict:
                     "last_success_at": cached_account.get("last_success_at")
                                        or previous.get("updated_at"),
                 })
+                for field in ("official_user_id", "verified_account_id", "account_replacement_id"):
+                    if field in cached_account:
+                        entry[field] = cached_account[field]
                 result["videos"].extend(
                     [{**video, "snapshot_state": "cached"} for video in cached_videos])
                 print(f"    [警告] {entry['error']}", file=sys.stderr)
@@ -300,7 +319,7 @@ def collect(args, registry=None) -> dict:
     result["data_as_of"] = min(success_times) if success_times else None
     result["latest_success_at"] = max(success_times) if success_times else None
     finalize_snapshot(result, "video")
-    print(f"完成, 共调用 API {client.call_count} 次, 作品 {len(result['videos'])} 条")
+    print(f"完成, 平台直采请求 {client.call_count} 次, 作品 {len(result['videos'])} 条")
     return result
 
 

@@ -9,6 +9,7 @@ data/exports/
 data/verification/
 data/identity_quarantine/
 data/identity_migrations/
+data/account_replacements/
 data/run_history.jsonl
 data/collection_usage.json
 data/collection_usage.json.lock

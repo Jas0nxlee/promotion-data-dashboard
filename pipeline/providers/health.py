@@ -34,7 +34,9 @@ def record_verification(key, settings, result=None, error=None, directory=None):
     value["metric_coverage"] = coverage
     value["metrics_verified"] = bool(result) and all(rate >= 0.95 for rate in coverage.values())
     if previous.get("config_fingerprint") == value["config_fingerprint"]:
-        for field in ("comments_verified", "replies_verified", "comments_checked_at", "sample_comment_count"):
+        for field in ("comments_verified", "replies_verified", "comments_checked_at", "sample_comment_count",
+                      "reply_verification_mode", "reply_verification_note", "sample_expected_replies",
+                      "sample_comments_complete", "sample_replies_complete"):
             if field in previous:
                 value[field] = previous[field]
     private_json(path, value)
@@ -56,12 +58,19 @@ def read_verification(key, settings, directory=None):
     identity = value.get("identity_verified", False)
     ready = bool(current and fresh and value.get("success") and identity and value.get("contents_complete") and value.get("metrics_verified"))
     details_required = key.split(":", 1)[0] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}
-    complete = ready and (not details_required or value.get("comments_verified") and value.get("replies_verified"))
+    no_replies_sample = (value.get("reply_verification_mode") == "no_replies_in_complete_sample"
+                         and value.get("sample_comments_complete") is True
+                         and value.get("sample_replies_complete") is True
+                         and type(value.get("sample_expected_replies")) is int
+                         and value["sample_expected_replies"] == 0
+                         and value.get("sample_comment_count", 0) > 0)
+    complete = ready and (not details_required or value.get("comments_verified")
+                         and (value.get("replies_verified") or no_replies_sample))
     return {**value, "status": "verified" if complete else "attention", "ready": bool(complete), "content_ready": ready,
             "evidence_current": current and fresh}
 
 
-def record_comment_verification(key, settings, comments, directory=None):
+def record_comment_verification(key, settings, comments, directory=None, *, stats=None):
     folder = directory or DATA / "verification"
     path = folder / (hashlib.sha256(key.encode()).hexdigest()[:24] + ".json")
     try:
@@ -70,8 +79,27 @@ def record_comment_verification(key, settings, comments, directory=None):
         value = {"config_fingerprint": fingerprint(settings), "success": False}
     if value.get("config_fingerprint") != fingerprint(settings):
         value = {"config_fingerprint": fingerprint(settings), "success": False}
+    stats = stats or {}
+    observed_replies = any(x.get("parent_comment_id") for x in comments)
+    # A complete nonempty root sample can prove that there are no replies to
+    # exercise. It cannot prove that a second-level page was ever requested.
+    no_replies_sample = (bool(comments) and stats.get("comments_complete") is True
+                         and stats.get("replies_complete") is True
+                         and type(stats.get("expected_replies")) is int
+                         and stats["expected_replies"] == 0
+                         and all(x.get("parent_comment_id") == ""
+                                 and type(x.get("reply_count")) is int
+                                 and x["reply_count"] == 0 for x in comments))
+    mode = ("observed_replies" if observed_replies else
+            "no_replies_in_complete_sample" if no_replies_sample else "unverified")
+    notes = {"observed_replies": "样本已读取二级回复明细",
+             "no_replies_in_complete_sample": "完整样本无回复，未执行二级分页",
+             "unverified": "样本尚未证明回复覆盖"}
     value.update({"comments_checked_at": now(), "comments_verified": True,
-                  "replies_verified": any(x.get("parent_comment_id") for x in comments),
-                  "sample_comment_count": len(comments)})
+                  "replies_verified": observed_replies, "sample_comment_count": len(comments),
+                  "reply_verification_mode": mode, "reply_verification_note": notes[mode],
+                  "sample_comments_complete": stats.get("comments_complete") is True,
+                  "sample_replies_complete": stats.get("replies_complete") is True,
+                  "sample_expected_replies": stats.get("expected_replies")})
     private_json(path, value)
     return value

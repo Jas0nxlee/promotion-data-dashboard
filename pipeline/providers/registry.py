@@ -1,5 +1,5 @@
 import json
-from runtime import PROVIDER_CONFIG
+from runtime import PROVIDER_CONFIG, ROOT
 from .base import ProviderError
 from .mapped import MappedBrowserProvider
 from .bilibili import BilibiliProvider
@@ -7,6 +7,7 @@ from .wechat_mp import WeChatOfficialProvider
 from .bilibili_creator import BilibiliCreatorProvider
 from .wechat_channels import WeChatChannelsProvider
 from .xiaohongshu import XiaohongshuProvider
+from .douyin import DouyinProvider
 from api_budget import ApiBudget
 
 PLATFORMS = {"bilibili", "douyin", "wechat_channels", "xiaohongshu", "zhihu", "wechat_service", "wechat_subscription"}
@@ -25,6 +26,7 @@ class ProviderRegistry:
             raise ProviderError("invalid_config", "provider 配置必须为含 accounts 映射的对象")
         self.config = config
         self.providers = {}
+        self.account_catalog = None
 
     @property
     def call_count(self):
@@ -36,10 +38,27 @@ class ProviderRegistry:
             raise ProviderError("unsupported", "此平台继续使用原公开采集器")
         key = f"{platform}:{account['account_name']}"
         if key not in self.providers:
+            # Snapshot/discovery records intentionally carry only content metadata.
+            # Scheduled comment-only runs still need the canonical account identity.
+            if self.account_catalog is None:
+                self.account_catalog = {}
+                for filename in ("accounts.json", "article_accounts.json"):
+                    try:
+                        document = json.loads((ROOT / "config" / filename).read_text())
+                    except FileNotFoundError:
+                        continue
+                    except (OSError, ValueError):
+                        raise ProviderError("invalid_config", "无法读取项目账号名单") from None
+                    for entry in document.get("accounts", []):
+                        self.account_catalog[f"{entry['platform']}:{entry['account_name']}"] = entry
+            account = {**account, **self.account_catalog.get(key, {})}
             settings = self.config.get("accounts", {}).get(key)
             if not settings:
                 raise ProviderError("setup_required", "账号尚未绑定已核验的后台采集配置，请运行 provider_setup status")
             kind = settings.get("provider", "browser")
+            if kind == "douyin_creator" and platform == "douyin":
+                self.providers[key] = DouyinProvider(account, settings)
+                return self.providers[key]
             if kind == "xiaohongshu_creator" and platform == "xiaohongshu":
                 self.providers[key] = XiaohongshuProvider(account, settings)
                 return self.providers[key]

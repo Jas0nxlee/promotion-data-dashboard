@@ -466,6 +466,45 @@ def is_official_author(comment, item, official_identities) -> bool:
     return bool(expected and actual.intersection(expected))
 
 
+def refresh_verified_official_identity(client, item, official_identities):
+    """Use the successful native scan's identity even before a dashboard exists."""
+    from providers.base import ProviderError, identifier
+    from providers.douyin import DouyinProvider
+    from providers.wechat_channels import WeChatChannelsProvider
+
+    if not isinstance(client, ProviderRegistry):
+        return
+    provider = client.get(item)
+    if not isinstance(provider, (DouyinProvider, WeChatChannelsProvider)):
+        return
+    # Only _profile's successful login check publishes this value. A configured
+    # binding alone is not proof that the current session belongs to it. For
+    # Channels, fetch_roots must also finish the request's finder-ID check.
+    profile = getattr(provider, "verified_profile", {})
+    handle = identifier(profile.get("verified_account_id"))
+    uid = identifier(profile.get("official_user_id"))
+    if isinstance(provider, DouyinProvider):
+        platform = "douyin"
+        if (not handle or handle != identifier(provider.account.get("platform_uid"))
+                or not uid.isdigit()
+                or (provider.settings.get("expected_uid")
+                    and uid != identifier(provider.settings["expected_uid"]))):
+            raise ProviderError("identity_mismatch", "评论采集缺少本次核验的抖音作者身份")
+    else:
+        platform = "wechat_channels"
+        canonical = identifier(provider.account.get("platform_uid"))
+        bound_sph = identifier(provider.settings.get("expected_sph"))
+        if (not handle or handle != (canonical or bound_sph)
+                or (bound_sph and handle != bound_sph)
+                or not uid or uid != identifier(provider.settings.get("expected_finder_id"))):
+            raise ProviderError("identity_mismatch", "评论采集缺少本次核验的视频号作者身份")
+    # Replace potentially stale snapshot identities, rather than continuing to
+    # recognize an old account after an explicitly configured account switch.
+    official_identities[item["account_key"]] = {
+        "platform": platform, "ids": {_normalized_identity(handle), _normalized_identity(uid)},
+    }
+
+
 def _parse_iso(value):
     if not value:
         return None
@@ -712,6 +751,7 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                 try:
                     roots, root_pages = fetch_root_comments(
                         client, platform, item, max_pages=args.max_pages)
+                    refresh_verified_official_identity(client, item, official_identities)
                     errors_before_content = len(errors)
                     scan_totals["detail_contents"] += 1
                     scan_totals["root_pages"] += root_pages
@@ -1322,7 +1362,7 @@ def main():
     ap.add_argument("--no-discovery", action="store_true",
                     help="不在评论任务中检查各账号最新一页内容")
     ap.add_argument("--platform", action="append",
-                    help="只检查指定平台（可重复），如 --platform bilibili --platform douyin")
+                    help="只检查指定平台或 platform:account_name（可重复），如 --platform douyin:望获OS")
     ap.add_argument("--recipient", default=DEFAULT_RECIPIENT, help="收件人邮箱")
     ap.add_argument("--max-age-days", type=int, default=0,
                     help="只看最近 N 天内发布的内容；0 表示全部（默认 0）")
@@ -1348,7 +1388,11 @@ def main():
     load_dotenv()
     now = datetime.now(CN_TZ)
     state = load_state()
+    timeline = timeline_store.load_timeline(now=now)
     contents = build_content_list(max_age_days=args.max_age_days)
+    if not args.dry_run:
+        from providers.history import retire_replaced_comment_contents
+        contents = retire_replaced_comment_contents(contents, state, timeline, load_json(VIDEO_DATA) or {})
     contents = merge_cached_discoveries(
         contents, state, args.max_age_days, now=now)
     print(f"内容清单：{len(contents)} 条（来自两个大屏数据）")
@@ -1375,7 +1419,6 @@ def main():
     elif client and not args.no_discovery:
         print(f"新内容发现：未到 {args.discovery_hours} 小时周期，本轮跳过")
 
-    timeline = timeline_store.load_timeline(now=now)
     new_items, errors, state = check_comments(
         client, contents, args, state=state, timeline=timeline,
         official_identities=load_official_identities(), now=now)
