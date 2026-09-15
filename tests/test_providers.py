@@ -216,16 +216,23 @@ class ProviderTests(unittest.TestCase):
 
 
 class WeChatTests(unittest.TestCase):
+    def setUp(self):
+        token = patch("providers.wechat_mp.WeChatToken.get", return_value="test-not-a-real-token")
+        token.start()
+        self.addCleanup(token.stop)
+
     def provider(self):
         account = {**ACCOUNT, "platform": "wechat_service"}
-        config = {"provider": "wechat_official", "bound_account_key": "wechat_service:测试账号", "access_token_env": "TEST_MP_TOKEN"}
+        config = {"provider": "wechat_official", "bound_account_key": "wechat_service:测试账号",
+                  "bound_platform_uid": ACCOUNT["platform_uid"], "expected_app_id": "fixture-app",
+                  "app_id_env": "TEST_MP_APP_ID", "app_secret_env": "TEST_MP_APP_SECRET"}
         return WeChatOfficialProvider(account, config, Mock(call_count=1))
 
     def test_published_parts_keep_legacy_ids_and_unknown_metrics(self):
         p = self.provider()
         p.http.request.return_value = {"total_count": 1, "item": [{"article_id": "opaque", "update_time": 1788220860,
             "content": {"news_item": [{"title": "文章", "url": "https://mp.weixin.qq.com/s?mid=100&idx=2"}]}}]}
-        with patch.dict(os.environ, {"TEST_MP_TOKEN": "test-not-a-real-token"}):
+        with patch.dict(os.environ, {"TEST_MP_APP_ID": "fixture-app", "TEST_MP_APP_SECRET": "fixture-secret"}):
             result = p.collect()
         self.assertEqual("100-2", result.records[0]["article_id"])
         self.assertIsNone(result.records[0]["published_at"])
@@ -235,7 +242,7 @@ class WeChatTests(unittest.TestCase):
     def test_permission_error_does_not_fall_back_to_paid_provider(self):
         p = self.provider()
         p.http.request.return_value = {"errcode": 48001}
-        with patch.dict(os.environ, {"TEST_MP_TOKEN": "test-not-a-real-token"}):
+        with patch.dict(os.environ, {"TEST_MP_APP_ID": "fixture-app", "TEST_MP_APP_SECRET": "fixture-secret"}):
             with self.assertRaisesRegex(ProviderError, "permission_denied"):
                 p.collect()
         self.assertEqual(1, p.http.request.call_count)
@@ -243,7 +250,7 @@ class WeChatTests(unittest.TestCase):
     def test_daily_readers_are_not_cumulative_views(self):
         p = self.provider()
         p.http.request.return_value = {"list": [{"msgid": "100_2", "detail": {"read_user": 17}}], "is_delay": "true"}
-        with patch.dict(os.environ, {"TEST_MP_TOKEN": "test-not-a-real-token"}):
+        with patch.dict(os.environ, {"TEST_MP_APP_ID": "fixture-app", "TEST_MP_APP_SECRET": "fixture-secret"}):
             result = p.daily_readers("2026-09-01")
         self.assertEqual("daily_readers", result["metric"])
         self.assertTrue(result["delayed"])

@@ -13,6 +13,7 @@ class WeChatOfficialProvider:
     def __init__(self, account, settings, http=None):
         self.account, self.settings = account, settings
         self.http = http or Http({"api.weixin.qq.com"})
+        self._verified_app_id = None
 
     @property
     def call_count(self):
@@ -22,6 +23,13 @@ class WeChatOfficialProvider:
         key = f"{self.account['platform']}:{self.account['account_name']}"
         if self.settings.get("bound_account_key") != key:
             raise ProviderError("identity_mismatch", "官方令牌尚未与此公众号完成绑定核验")
+        canonical = self.account.get("platform_uid")
+        if not canonical or self.settings.get("bound_platform_uid") != canonical:
+            raise ProviderError("identity_mismatch", "公众号原始ID尚未与此AppID完成绑定核验")
+        if os.environ.get(self.settings.get("access_token_env", ""), "").strip():
+            raise ProviderError("setup_required", "静态公众号令牌无法证明目标账号身份；请使用已核验绑定的AppID续期配置")
+        if not self.settings.get("expected_app_id"):
+            raise ProviderError("setup_required", "公众号需要已核验的AppID与原始ID绑定")
         token = WeChatToken(self.settings, self.http).get()
         response = self.http.request("POST", "https://api.weixin.qq.com" + path,
                                      params={"access_token": token}, json=payload)
@@ -32,6 +40,7 @@ class WeChatOfficialProvider:
             raise ProviderError("permission_denied", "此账号未获得该官方 API 权限")
         if code:
             raise ProviderError("platform_error", f"公众号接口返回错误 {code}")
+        self._verified_app_id = self.settings["expected_app_id"]
         return response
 
     def collect(self, max_pages=200, discovery=False):
@@ -71,11 +80,8 @@ class WeChatOfficialProvider:
                 raise ProviderError("incomplete_pagination", "发布记录空页但未达到总数")
         verified = self.settings.get("history_scope_verified") is True
         complete = end and verified
-        stable_binding = (not os.environ.get(self.settings.get("access_token_env", ""))
-                          and os.environ.get(self.settings.get("app_id_env", "")) == self.settings.get("expected_app_id")
-                          and bool(self.settings.get("expected_app_id")))
         return Collection({"nickname": self.account["account_name"], "followers": None, "total": len(rows),
-                           "verified_account_id": self.settings.get("expected_app_id") if stable_binding else None},
+                           "verified_account_id": self._verified_app_id},
                           unique(rows, "article_id"), complete,
                           "官方发布清单；未返回首次发布时间和累计互动。" + ("" if verified else "需与后台历史、图片消息对账；保留缓存。") + ("" if end else "分页尚未结束。"),
                           self.source, self.call_count)

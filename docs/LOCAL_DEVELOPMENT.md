@@ -12,7 +12,8 @@
 | 公众号官方发布列表 | 已实现分页、多图文展开、历史 ID 映射与权限错误处理 | 稳定令牌自动续期已实现；未提供实际账号凭证，尚未实测 |
 | 公众号新每日阅读统计 | 提供单独查询方法，保存阅读人数与延迟标记 | 未接入常规调度；不混入累计阅读次数 |
 | 小红书创作后台 | `xiaohongshu_creator` 内置页面配方、容器滚动、首屏总数与置顶去重 | 安芯日记62篇及五项指标、31条评论回复通过；创作后台和主站需分别登录 |
-| 知乎、公众号后台 | 可使用统一浏览器执行器和显式字段映射 | 尚需登录确认真实流程 |
+| 知乎创作后台 | `zhihu_creator`，文章与回答分开，身份前后核验和严格分页 | 安芯工程师32篇文章通过；土星云待正确账号登录 |
+| 公众号后台 | 通用浏览器执行器和官方API路线均保留 | 仍需实际权限、原始ID/AppID绑定及历史范围核验 |
 | 抖音作品及主站评论 | `douyin_creator`，独立会话、完整作品游标、数字评论ID与回复分页 | 望获OS98条作品、55条评论回复；安芯Max14条作品、3条一级评论，样本无二级回复 |
 | 评论迁移保护 | 新旧 ID 未确认时阻止扫描推进与提醒 | 需真实新旧评论对账后配置兼容标记；尚未实现不同 ID 体系的自动映射迁移 |
 | 自动下载平台报表、官方令牌自动续期 | 通用导出与微信稳定令牌续期已实现并本地测试 | 真实导出按钮与账号凭证仍待接入 |
@@ -82,14 +83,17 @@ export PROMOTION_PROVIDER_CONFIG="$PWD/.runtime/providers.json"
     "wechat_service:你的账号名": {
       "provider": "wechat_official",
       "bound_account_key": "wechat_service:你的账号名",
-      "access_token_env": "WECHAT_OWN_ACCOUNT_ACCESS_TOKEN",
+      "bound_platform_uid": "gh_your_verified_id",
+      "app_id_env": "WECHAT_OWN_ACCOUNT_APP_ID",
+      "app_secret_env": "WECHAT_OWN_ACCOUNT_APP_SECRET",
+      "expected_app_id": "wx_your_verified_app_id",
       "history_scope_verified": false
     }
   }
 }
 ```
 
-令牌应来自该账号已完成绑定的授权服务，通过进程环境提供；也可以配置 `app_id_env`、`app_secret_env`、`expected_app_id`，启用带文件锁和私有缓存的稳定令牌自动续期。续期只使用普通模式，不主动强制其他令牌失效。不能把别的公众号令牌填入同一个绑定。认证、权限与发布清单范围仍由微信实际返回决定。完成与后台历史和图片消息的对账前，不将 `history_scope_verified` 设为 true。
+先通过实际账号核验 AppID 与公众号原始ID的对应关系，再填写 `bound_account_key`、`bound_platform_uid` 和 `expected_app_id`。密钥通过进程环境提供，稳定令牌采用文件锁和私有缓存自动续期，不强制其他令牌失效。静态令牌目前不能独立证明所属账号，因此不会用于采集；未经身份核验的完整或部分记录均不进入快照。认证、权限与发布清单范围仍由微信实际返回决定。完成与后台历史和图片消息的对账前，不将 `history_scope_verified` 设为 true。
 
 发布列表无法从 URL 解析旧文章主键时停止覆盖，避免同文换 ID 重复入库。官方素材更新时间不写成首次发布时间。每日阅读人数由 `daily_readers(day)` 单独返回，不能直接作为大屏累计阅读量。
 

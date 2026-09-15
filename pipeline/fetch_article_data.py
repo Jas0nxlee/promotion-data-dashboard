@@ -1159,6 +1159,12 @@ class ProviderArticleCollector:
         settings = self.registry.config.get("accounts", {}).get(key, {})
         try:
             result = self.registry.get(account).collect(max_pages=self.max_pages)
+            # Partial results still enter the cache merge. Reject unverified
+            # identities before either complete or partial records are admitted.
+            verified = result.profile.get("verified_account_id")
+            if not isinstance(verified, str) or not verified.strip():
+                from providers.base import ProviderError
+                raise ProviderError("identity_mismatch", "授权文章数据源未核验目标账号，保留原快照")
             record_verification(key, settings, result)
         except Exception as error:
             record_verification(key, settings, error=error)
