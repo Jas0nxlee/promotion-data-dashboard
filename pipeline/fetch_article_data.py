@@ -26,6 +26,7 @@ from snapshot_utils import (
     is_suspicious_drop,
     merge_records,
 )
+from api_budget import ApiBudget
 
 try:
     import requests
@@ -257,6 +258,7 @@ class HttpClient:
         self.min_interval = min_interval
         self.last_call = 0.0
         self.call_count = 0
+        self.budget = ApiBudget(default_task="article_data")
 
     def get(self, url, *, params=None, headers=None, timeout=30, retries=3, tag="page"):
         last_error = "未知错误"
@@ -265,6 +267,7 @@ class HttpClient:
             if wait > 0:
                 time.sleep(wait)
             self.last_call = time.time()
+            self.budget.consume(path)
             self.call_count += 1
             try:
                 response = self.session.get(url, params=params, headers=headers, timeout=timeout)

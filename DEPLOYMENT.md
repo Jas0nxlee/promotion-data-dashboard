@@ -4,18 +4,18 @@
 
 - `frontend`：BusyBox `httpd`，只提供静态页面，默认监听宿主机 `8080`。
 - `scheduler`：Python + Playwright/Chromium，负责数据采集、评论检查和 SMTP 邮件发送。
-- `data/`、`web/data/`、`web/articles/data/` 使用宿主机目录持久化；升级镜像不会丢失快照、评论游标和待发邮件。
+- `data/`、`web/data/`、`web/articles/data/`、`web/comments/data/` 使用宿主机目录持久化。
 
 调度时间固定按北京时间执行：
 
 - 每天 `08:00`：依次采集视频数据、图文数据、校验快照，然后执行当小时评论检查和邮件发送。
 - 每小时整点：评论检查，随后发送待发邮件；SMTP 临时失败时队列保留到下一小时重试。
 
-评论正文接口当前覆盖抖音、B站、小红书和视频号：评论任务会先读取各账号最新一页作品，发现每日快照后新发布的内容。默认每小时检查各账号近 90 天的最新 10 条内容，完整分页一级评论，暂不请求二级回复。容器首次启动会立即执行评论任务并建立持久化 `monitor_started_at` 基线，不发送此前的历史评论；容器重启继续使用原基线。基线完成后发现的新内容，只提醒有可靠时间戳且产生于启动基线之后的评论；无可靠时间戳的存量先纳入基线，后续新评论 ID 正常提醒。游标异常、重复或超过 `--max-pages` 时，该内容本轮失败且不推进状态。CSDN、电子发烧友、百家号、知乎、公众号、今日头条和搜狐只对比大屏快照中的评论数；由于大屏每天 08:00 刷新，这些平台的评论变化只能在每日刷新后发现。
+评论正文接口覆盖抖音、B站、小红书和视频号。作品按发布年龄分层轮询：0～7 天每 2 小时、8～30 天每 6 小时、31～90 天每 24 小时。只有一级评论的 `reply_count` 增长时才查询回复详情，并只记录稳定用户 ID 匹配的官方回复。`timeline_started_at` 首次落盘后不再变化，时间线不回填上线之前的互动。
 
 邮件采用至少一次投递：提醒先原子写入持久化队列，再推进评论状态；SMTP 成功后才逐封移出。进程在 SMTP 已接收邮件、但队列尚未来得及落盘的极端窗口中可能导致重复邮件，但不会主动删除未确认成功的提醒。
 
-完整分页调用量较大。生产环境使用限制内容数、发布时间范围、翻页上限和关闭二级回复的组合参数；确需恢复全量或二级回复时，应先重新评估 TikHub 当前接口价格和预算。
+视频、图文、新内容发现、一级评论、官方回复和失败重试共享 `TIKHUB_DAILY_CALL_LIMIT`。请求在发出前原子记账，达到上限后立即阻断。
 
 ## 配置
 
@@ -55,8 +55,9 @@ COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
 ARTICLE_FETCH_ARGS=--wechat-pages 5
-COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20 --no-replies
+COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20
 COMMENT_EMAIL_MAX_EVENTS=100
+TIKHUB_DAILY_CALL_LIMIT=800
 ```
 
 ## 启动与检查
@@ -81,6 +82,7 @@ docker compose up -d --no-build
 
 - 视频大屏：`http://服务器IP:8080/`
 - 图文大屏：`http://服务器IP:8080/articles/`
+- 评论时间线：`http://服务器IP:8080/comments/`
 
 如需修改外部端口，在 `.env` 设置 `DASHBOARD_PORT=端口号`。
 

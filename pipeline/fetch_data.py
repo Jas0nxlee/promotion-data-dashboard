@@ -33,6 +33,7 @@ from snapshot_utils import (
     finalize_snapshot,
     is_suspicious_drop,
 )
+from api_budget import ApiBudget
 
 try:
     import requests
@@ -109,6 +110,7 @@ class TikHubClient:
         self.min_interval = min_interval
         self._last_call = 0.0
         self.call_count = 0
+        self.budget = ApiBudget(default_task="video_data")
 
     def _throttle(self):
         wait = self.min_interval - (time.time() - self._last_call)
@@ -122,6 +124,7 @@ class TikHubClient:
         last_err = None
         for attempt in range(1, retries + 1):
             self._throttle()
+            self.budget.consume(path)
             self.call_count += 1
             try:
                 resp = self.session.request(method, url, params=params,

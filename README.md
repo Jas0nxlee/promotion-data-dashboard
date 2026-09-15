@@ -2,10 +2,11 @@
 
 面向多平台推广账号的数据采集、质量检查、可视化和评论提醒项目。
 
-项目包含两套静态大屏：
+项目包含三套静态大屏：
 
 - 视频推广数据大屏：B站、抖音、视频号。
 - 图文推广数据大屏：CSDN、电子发烧友、百家号、知乎、微信公众号、今日头条、搜狐、小红书。
+- 评论互动时间线：上线后新增评论、官方回复、响应耗时和 API 用量。
 
 后端不是常驻 Web API，而是一组按计划运行的 Python 采集任务。采集结果写入 JSON 快照，前端由原生 JavaScript 和 ECharts 直接读取。
 
@@ -15,7 +16,8 @@
 - 视频与图文大屏切换、筛选、趋势、排行、账号对比和明细查看。
 - 数据去重、指标覆盖率、采集状态和新鲜度展示。
 - 单账号失败保留最近成功快照，防止线上数据被临时空响应覆盖。
-- B站、抖音、小红书、视频号评论及二级回复完整分页监测。
+- B站、抖音、小红书、视频号分层评论监测与条件官方回复检测。
+- TikHub 跨采集器每日硬上限、分任务记账和近 35 天用量趋势。
 - 其他平台评论数量增长提醒。
 - SMTP 邮件队列、失败重试和按平台配置收件人。
 - Docker 部署及北京时间定时调度。
@@ -43,7 +45,7 @@ Docker Compose 包含两个服务：
 
 - `frontend`：BusyBox `httpd`，只读提供静态页面，默认端口 `8080`。
 - `scheduler`：Python 采集、评论监测、SMTP 发送和定时调度。
-- 视频和图文大屏均可一键导出当前筛选及搜索结果，生成 Excel 可直接打开的 UTF-8 CSV。
+- 三套大屏均可一键导出当前筛选及搜索结果，生成 Excel 可直接打开的 UTF-8 CSV。
 
 ## 目录结构
 
@@ -55,13 +57,16 @@ Docker Compose 包含两个服务：
 │   ├── fetch_data.py               # 视频数据采集
 │   ├── fetch_article_data.py       # 图文数据采集
 │   ├── comment_monitor.py          # 评论发现、分页、增量判断和入队
+│   ├── comment_timeline.py         # 上线后评论/官方回复时间线
+│   ├── api_budget.py              # TikHub 每日调用预算
 │   ├── send_comment_alerts.py      # SMTP 待发队列发送
 │   ├── scheduler.py                # 北京时间调度器
 │   ├── snapshot_utils.py           # 快照合并、质量摘要和原子写入
 │   └── validate_snapshots.py       # 快照校验
 ├── tests/                          # 分页、基线、邮件和调度测试
 ├── web/                            # 静态视频大屏
-│   └── articles/                   # 静态图文大屏
+│   ├── articles/                   # 静态图文大屏
+│   └── comments/                   # 评论与官方回复时间线
 ├── docker-compose.yml
 ├── Dockerfile.frontend
 ├── Dockerfile.collector
@@ -161,7 +166,7 @@ docker compose up -d --no-build
 
 - 容器第一次启动：立即执行评论任务并建立启动基线。
 - 每天 `08:00`：视频数据采集 → 图文数据采集 → 快照校验 → 评论监测 → 邮件发送。
-- 每小时：发现最新内容 → 评论监测 → 发送待发邮件。
+- 每小时：执行到期的分层评论任务 → 发送待发邮件。
 
 调度状态保存在 `data/scheduler_state.json`。同一小时内重启容器不会重复执行整轮任务。
 
@@ -171,10 +176,10 @@ docker compose up -d --no-build
 
 B站、抖音、小红书和视频号执行以下流程：
 
-1. 每小时读取账号最新一页内容，发现当天新增作品。
+1. 每 2 小时读取账号最新一页内容，发现新增作品。
 2. 默认检查各账号近 90 天的最新 10 条内容。
-3. 完整分页一级评论。
-4. 默认不请求二级回复；移除 `--no-replies` 后可恢复。
+3. 0～7 天内容每 2 小时、8～30 天每 6 小时、31～90 天每 24 小时完整分页一级评论。
+4. 仅当一级评论 `reply_count` 增长时查询该评论的回复详情。
 5. 使用评论 ID 去重，只把新增事件写入邮件队列。
 
 默认参数：
@@ -182,16 +187,30 @@ B站、抖音、小红书和视频号执行以下流程：
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
 ARTICLE_FETCH_ARGS=--wechat-pages 5
-COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20 --no-replies
+COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20
 COMMENT_EMAIL_MAX_EVENTS=100
+TIKHUB_DAILY_CALL_LIMIT=800
 ```
 
 - `--limit 10` 表示每个账号最多检查最新 10 条内容。
 - `--max-age-days 90` 表示只检查近 90 天发布的内容。
 - `--max-pages 20` 是单条内容的安全上限。
 - 游标异常、游标重复或超过上限时，该内容本轮不推进状态，下小时重试。
-- 默认用 `--no-replies` 关闭二级回复采集。
+- `--no-replies` 可紧急完全关闭官方回复检测。
 - 可用 `--no-discovery` 关闭小时级新内容发现。
+
+### 评论与官方回复时间线
+
+- 首次正式运行写入 `timeline_started_at`，时间线不回填此时刻之前的评论和回复。
+- 仅有平台时间戳不早于上线时刻的非官方一级评论进入时间线。
+- 回复作者稳定用户 ID 与被监测账号匹配时，才计为官方回复；昵称不用于猜测。
+- 官方响应耗时 = 官方回复平台时间 - 一级评论平台时间。
+- 时间线大屏支持平台、账号、回复状态、时间和关键词筛选及 CSV 导出。
+
+### API 预算
+
+`TIKHUB_DAILY_CALL_LIMIT` 是所有 TikHub 请求共享的北京时间每日硬上限。每次 HTTP 尝试在发出前原子扣减额度，包括失败重试。达到上限后不再发出请求，未执行任务保留到下一调度周期。
+首次启用当天的用量只覆盖启用时刻之后的请求，大屏会显示 API 记账起点。
 
 ### 只提醒服务启动后的评论
 
@@ -287,6 +306,7 @@ python3 -m http.server 8081 --directory web
 
 - `http://127.0.0.1:8081/`
 - `http://127.0.0.1:8081/articles/`
+- `http://127.0.0.1:8081/comments/`
 
 ## 手动运行评论任务
 
@@ -314,6 +334,7 @@ python3 -m unittest discover -s tests -v
 python3 pipeline/validate_snapshots.py
 node --check web/js/app.js
 node --check web/articles/js/app.js
+node --check web/comments/js/app.js
 docker compose config --quiet
 ```
 
@@ -328,6 +349,9 @@ docker compose config --quiet
 | `web/data/dashboard_data.json` | 视频页面数据 | 是 |
 | `web/articles/data/article_dashboard_data.json` | 图文页面数据 | 是 |
 | `data/comment_state.json` | 评论ID、启动基线和数量游标 | 是 |
+| `data/comment_timeline.json` | 上线后评论与官方回复原始时间线 | 是 |
+| `data/api_usage.json` | TikHub 近 35 天分任务调用记账 | 是 |
+| `web/comments/data/comment_timeline.json` | 时间线大屏脱敏快照 | 是 |
 | `data/comment_alert.json` | SMTP待发队列 | 是 |
 | `data/scheduler_state.json` | 最近调度时段及返回码 | 是 |
 

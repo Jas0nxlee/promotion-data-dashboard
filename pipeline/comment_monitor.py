@@ -12,12 +12,12 @@
 工作方式（尽量简单）：
   1. 从大屏数据 JSON（data/dashboard_data.json + data/article_dashboard_data.json）
      读取各账号的内容清单（作品/文章 + 平台 + 内容ID）。
-  2. 每小时读取四个明细平台的最新一页作品，补充每日快照后新发布的内容。
-  3. 可抓正文的平台：默认检查全部内容，完整分页一级评论与二级回复，
-     与上次已见评论ID对比，找出新增评论。
+  2. 按配置周期读取四个明细平台的最新一页作品。
+  3. 按作品年龄分层检查一级评论；仅在 reply_count 增长时查询回复详情。
+     只记录功能上线后的新评论与稳定用户 ID 匹配的官方回复。
   4. 仅计数的平台：对比每日大屏快照中的评论数字，增长即提醒。
   5. 有新增评论时，写入待发邮件队列，由 send_comment_alerts.py 发送。
-  6. 状态保存在 data/comment_state.json，避免重复提醒。
+  6. 所有 TikHub 请求共享每日硬上限；时间线和 API 用量持久化到 data/。
 
 用法:
     python pipeline/comment_monitor.py                # 全量检查一次
@@ -44,6 +44,8 @@ except ImportError:
     sys.exit("缺少依赖: pip3 install requests")
 
 from snapshot_utils import atomic_write_json
+from api_budget import ApiBudget, ApiBudgetExceeded
+import comment_timeline as timeline_store
 
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = ROOT / "data"
@@ -139,7 +141,8 @@ def dig(obj, *paths, default=None):
 class TikHubClient:
     """极简 TikHub 客户端，复用现有采集脚本的调用方式。"""
 
-    def __init__(self, api_key: str, min_interval: float = 0.6):
+    def __init__(self, api_key: str, min_interval: float = 0.6,
+                 budget: ApiBudget | None = None):
         self.session = requests.Session()
         self.session.headers.update({
             "Authorization": f"Bearer {api_key}",
@@ -149,6 +152,8 @@ class TikHubClient:
         self.base_url = os.environ.get("TIKHUB_BASE_URL", BASE_URL).rstrip("/")
         self._last_call = 0.0
         self.call_count = 0
+        self.usage_task = "comment_roots"
+        self.budget = budget or ApiBudget(default_task=self.usage_task)
 
     def _throttle(self):
         wait = self.min_interval - (time.time() - self._last_call)
@@ -156,11 +161,13 @@ class TikHubClient:
             time.sleep(wait)
         self._last_call = time.time()
 
-    def request(self, method, path, params=None, payload=None, timeout=45, retries=3):
+    def request(self, method, path, params=None, payload=None, timeout=45, retries=3,
+                usage_task=None):
         url = f"{self.base_url}{path}"
         last_error = "未知错误"
         for attempt in range(1, retries + 1):
             self._throttle()
+            self.budget.consume(path, task=usage_task or self.usage_task)
             self.call_count += 1
             try:
                 resp = self.session.request(
@@ -236,6 +243,7 @@ def build_content_list(max_age_days=0):
             "published_at": v.get("published_at", ""),
             "content_type": "视频",
             "stats_comment": to_int(dig(v, "stats.comment")),
+            "primary_account_key": v.get("primary_account_key", ""),
         })
 
     article_data = load_json(ARTICLE_DATA) or {}
@@ -261,6 +269,9 @@ def build_content_list(max_age_days=0):
     filtered = []
     for c in contents:
         if not c["content_id"] or c["content_id"] in ("None", "0"):
+            continue
+        if c.get("primary_account_key") \
+                and c.get("account_key") != c.get("primary_account_key"):
             continue
         try:
             pub = datetime.fromisoformat(c["published_at"].replace("Z", "+00:00"))
@@ -317,7 +328,8 @@ def _deepest_data(payload):
 
 
 def discover_latest_contents(client, existing):
-    """每小时只拉各账号第一页作品，发现每日大屏刷新后的新内容。"""
+    """按配置周期只拉各账号第一页作品，发现每日快照后的新内容。"""
+    client.usage_task = "comment_discovery"
     known = {(item["platform"], item["content_id"]) for item in existing}
     additions, errors = [], []
     video_snapshot = load_json(VIDEO_DATA) or {}
@@ -340,7 +352,8 @@ def discover_latest_contents(client, existing):
                 uid = str(account.get("platform_uid") or "")
                 response = client.request(
                     "GET", "/api/v1/bilibili/app/fetch_user_videos",
-                    params={"user_id": uid, "post_filter": "archive", "page": 1, "ps": 50})
+                    params={"user_id": uid, "post_filter": "archive", "page": 1, "ps": 50},
+                    usage_task="comment_discovery")
                 data = _deepest_data(response)
                 for raw in dig(data, "item", "items", "list.vlist", "vlist", default=[]) or []:
                     content_id = str(dig(raw, "bvid", "param", "aid", default=""))
@@ -378,13 +391,15 @@ def discover_latest_contents(client, existing):
                 if username.startswith("sph"):
                     resolved = client.request(
                         "POST", "/api/v1/wechat_channels/v2/fetch_channel_id_to_username",
-                        payload={"channel_id": username, "raw": False})
+                        payload={"channel_id": username, "raw": False},
+                        usage_task="comment_discovery")
                     username = str(dig(_deepest_data(resolved), "username", "finder_username") or "")
                 if not username:
                     raise RuntimeError("无法解析视频号 username")
                 response = client.request(
                     "POST", "/api/v1/wechat_channels/v2/fetch_user_videos",
-                    payload={"username": username, "last_buffer": "", "raw": False})
+                    payload={"username": username, "last_buffer": "", "raw": False},
+                    usage_task="comment_discovery")
                 data = _deepest_data(response)
                 for raw in dig(data, "videos", "items", "list", "objects", default=[]) or []:
                     content_id = str(dig(raw, "object_id", "objectId", "id", default=""))
@@ -402,7 +417,8 @@ def discover_latest_contents(client, existing):
                 user_id = str(account.get("platform_uid") or "")
                 response = client.request(
                     "GET", "/api/v1/xiaohongshu/app_v2/get_user_posted_notes",
-                    params={"user_id": user_id, "cursor": ""})
+                    params={"user_id": user_id, "cursor": ""},
+                    usage_task="comment_discovery")
                 data = _deepest_data(response)
                 for raw in data.get("notes") or []:
                     content_id = str(raw.get("id") or "")
@@ -421,6 +437,8 @@ def discover_latest_contents(client, existing):
                     continue
                 known.add(identity)
                 additions.append(row)
+        except ApiBudgetExceeded:
+            raise
         except Exception as exc:
             errors.append(
                 f"{PLATFORM_LABEL.get(platform, platform)} {account.get('account_name', '')} "
@@ -432,6 +450,17 @@ def discover_latest_contents(client, existing):
 # 评论正文解析：各平台从响应中提取评论列表
 # ---------------------------------------------------------------------------
 
+def identity_values(*values):
+    result = []
+    for value in values:
+        candidates = value if isinstance(value, (list, tuple, set)) else [value]
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text and text not in result:
+                result.append(text)
+    return result
+
+
 def parse_douyin_comments(data):
     data = unwrap_data(data)
     comments = dig(data, "comments", "data.comments", default=[]) or []
@@ -440,10 +469,16 @@ def parse_douyin_comments(data):
         cid = str(dig(c, "cid", "comment_id", "id", default=""))
         if not cid:
             continue
+        user = c.get("user", {}) or {}
+        if not isinstance(user, dict):
+            user = {}
         out.append({
             "comment_id": cid,
             "content": dig(c, "text", "content", default="") or "",
-            "user": dig(c, "user.nickname", "nickname", default="") or "",
+            "user": user.get("nickname") or c.get("nickname") or "",
+            "user_ids": identity_values(
+                user.get("uid"), user.get("sec_uid"), user.get("unique_id"),
+                user.get("short_id"), c.get("user_id")),
             "like": to_int(dig(c, "digg_count", "like_count", default=0), 0),
             "time": epoch_to_str(dig(c, "create_time", "createTime")),
             "created_at": epoch_to_iso(dig(c, "create_time", "createTime")),
@@ -471,6 +506,7 @@ def parse_bilibili_comments(data):
             "comment_id": cid,
             "content": dig(c, "content.message", "content", "message", default="") or "",
             "user": member.get("uname", "") or "",
+            "user_ids": identity_values(member.get("mid"), c.get("mid")),
             "like": to_int(dig(c, "like", "like_count", default=0), 0),
             "time": epoch_to_str(dig(c, "ctime", "create_time")),
             "created_at": epoch_to_iso(dig(c, "ctime", "create_time")),
@@ -495,6 +531,9 @@ def parse_xiaohongshu_comments(data):
             "comment_id": cid,
             "content": dig(c, "content", "text", default="") or "",
             "user": user.get("nickname", "") or "",
+            "user_ids": identity_values(
+                user.get("user_id"), user.get("userid"), user.get("id"),
+                user.get("red_id"), c.get("user_id")),
             "like": to_int(dig(c, "like_count", "likeCount", default=0), 0),
             "time": epoch_to_str(dig(c, "create_time", "time")),
             "created_at": epoch_to_iso(dig(c, "create_time", "time")),
@@ -511,10 +550,17 @@ def parse_wechat_channels_comments(data):
         cid = str(dig(c, "comment_id", "commentId", "id", default=""))
         if not cid:
             continue
+        user = c.get("user", {}) or {}
+        if not isinstance(user, dict):
+            user = {}
         out.append({
             "comment_id": cid,
             "content": dig(c, "content", default="") or "",
             "user": dig(c, "nickname", "username", default="") or "",
+            "user_ids": identity_values(
+                c.get("username"), c.get("user_id"), c.get("finder_username"),
+                user.get("username"), user.get("user_id"),
+                dig(c, "contact.username", "reply_contact.username")),
             "like": to_int(dig(c, "like_count", "likeCount", default=0), 0),
             "time": epoch_to_str(dig(c, "create_time", "createtime")),
             "created_at": epoch_to_iso(dig(c, "create_time", "createtime")),
@@ -529,6 +575,120 @@ PARSERS = {
     "xiaohongshu": parse_xiaohongshu_comments,
     "wechat_channels": parse_wechat_channels_comments,
 }
+
+
+def _normalized_identity(value):
+    return str(value or "").strip().casefold()
+
+
+def load_official_identities():
+    """构建账号主键 -> 平台稳定用户 ID 集合，不使用昵称猜测官方身份。"""
+    result = {}
+
+    def add(account):
+        platform = str(account.get("platform") or "")
+        account_name = str(account.get("account_name") or "")
+        key = str(account.get("account_key") or f"{platform}:{account_name}")
+        if platform not in COMMENT_API_PLATFORMS or not account_name:
+            return
+        entry = result.setdefault(key, {"platform": platform, "ids": set()})
+        for field in ("platform_uid", "provided_id", "official_user_id"):
+            value = _normalized_identity(account.get(field))
+            if value:
+                entry["ids"].add(value)
+
+    for path in (VIDEO_ACCOUNTS, ARTICLE_ACCOUNTS):
+        for account in (load_json(path) or {}).get("accounts", []):
+            add(account)
+    for path in (VIDEO_DATA, ARTICLE_DATA):
+        for account in (load_json(path) or {}).get("accounts", []):
+            add(account)
+    return result
+
+
+def is_official_author(comment, item, official_identities) -> bool:
+    expected = official_identities.get(item.get("account_key"), {}).get("ids", set())
+    actual = {_normalized_identity(value) for value in comment.get("user_ids", [])}
+    actual.discard("")
+    return bool(expected and actual.intersection(expected))
+
+
+def _parse_iso(value):
+    if not value:
+        return None
+    try:
+        parsed = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=CN_TZ)
+    return parsed.astimezone(CN_TZ)
+
+
+def content_poll_hours(item, args, *, now=None) -> int:
+    now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    published = _parse_iso(item.get("published_at"))
+    age_days = max(0, (now - published).days) if published else 10_000
+    fresh_days = int(getattr(args, "fresh_days", 7))
+    recent_days = int(getattr(args, "recent_days", 30))
+    if age_days <= fresh_days:
+        return max(1, int(getattr(args, "fresh_hours", 2)))
+    if age_days <= recent_days:
+        return max(1, int(getattr(args, "recent_hours", 6)))
+    return max(1, int(getattr(args, "older_hours", 24)))
+
+
+def content_is_due(item, state, args, *, now=None) -> bool:
+    if not getattr(args, "tiered_polling", False) or item.get("newly_discovered"):
+        return True
+    now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    key = f"{item.get('platform')}:{item.get('content_id')}"
+    last = _parse_iso((state.get("content_poll_at") or {}).get(key))
+    if not last:
+        return True
+    return now - last >= timedelta(hours=content_poll_hours(item, args, now=now))
+
+
+def discovery_is_due(state, args, *, now=None) -> bool:
+    if getattr(args, "no_discovery", False):
+        return False
+    now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    last = _parse_iso(state.get("last_discovery_attempt_at"))
+    interval = max(1, int(getattr(args, "discovery_hours", 2)))
+    return not last or now - last >= timedelta(hours=interval)
+
+
+def merge_cached_discoveries(contents, state, max_age_days, *, now=None):
+    now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    cutoff = now - timedelta(days=max_age_days) if max_age_days > 0 else None
+    result = list(contents)
+    known = {(item.get("platform"), item.get("content_id")) for item in result}
+    retained = []
+    for item in state.get("discovered_contents", []):
+        item = {**item, "newly_discovered": False}
+        published = _parse_iso(item.get("published_at"))
+        if cutoff and published and published < cutoff:
+            continue
+        retained.append(item)
+        identity = (item.get("platform"), item.get("content_id"))
+        if identity not in known:
+            result.append(item)
+            known.add(identity)
+    state["discovered_contents"] = retained
+    return result
+
+
+def cache_discoveries(state, additions):
+    merged = {
+        (item.get("platform"), item.get("content_id")): dict(item)
+        for item in state.get("discovered_contents", [])
+        if item.get("platform") and item.get("content_id")
+    }
+    for item in additions:
+        merged[(item.get("platform"), item.get("content_id"))] = {
+            **item, "newly_discovered": False,
+        }
+    state["discovered_contents"] = list(merged.values())
 
 
 def epoch_to_str(ts):
@@ -558,6 +718,12 @@ def load_state():
         state["seen_comments"] = {}
     if "content_counts" not in state:
         state["content_counts"] = {}
+    if "content_poll_at" not in state:
+        state["content_poll_at"] = {}
+    if "root_reply_counts" not in state:
+        state["root_reply_counts"] = {}
+    if "discovered_contents" not in state:
+        state["discovered_contents"] = []
     if "baseline_done" not in state:
         state["baseline_done"] = not first_run
     if state.get("monitor_state_version") != MONITOR_STATE_VERSION:
@@ -627,30 +793,44 @@ def comment_created_after(comment, started_at):
         return False
 
 
-def check_comments(client, contents, args):
-    """执行一轮评论检查，返回新评论列表和状态更新。"""
-    state = load_state()
-    seen = state.get("seen_comments", {})      # content_id -> {comment_id: 1}
-    counts = state.get("content_counts", {})   # content_id -> last_comment_count
+def check_comments(client, contents, args, *, state=None, timeline=None,
+                   official_identities=None, now=None):
+    """执行一轮分层评论检查，仅在回复数增长时查询二级回复。"""
+    state = state if isinstance(state, dict) else load_state()
+    timeline = timeline if isinstance(timeline, dict) else None
+    official_identities = official_identities or {}
+    now = (now or datetime.now(CN_TZ)).astimezone(CN_TZ)
+    now_iso = now.isoformat()
+    seen = state.get("seen_comments", {})
+    counts = state.get("content_counts", {})
+    poll_at = state.get("content_poll_at", {})
+    reply_counts = state.get("root_reply_counts", {})
     full_scan_baselines = set(state.get("full_scan_baselines", []))
     new_items = []
     errors = []
     scan_totals = {
-        "detail_contents": 0, "root_pages": 0,
-        "reply_pages": 0, "public_comments": 0,
+        "detail_contents": 0, "root_pages": 0, "reply_pages": 0,
+        "public_comments": 0, "skipped_not_due": 0,
+        "reply_threads_checked": 0, "timeline_comments_added": 0,
+        "official_replies_added": 0, "unidentified_reply_authors": 0,
+        "budget_exhausted": False,
     }
+    calls_before = getattr(client, "call_count", 0) if client else 0
 
-    # 按账号分组，每个账号只看最近 N 条内容（评论通常集中在最新内容）
     by_account = {}
-    for c in contents:
-        by_account.setdefault(c["account_key"], []).append(c)
+    for content in contents:
+        by_account.setdefault(content["account_key"], []).append(content)
     for key in by_account:
-        by_account[key].sort(key=lambda x: x.get("published_at") or "", reverse=True)
+        by_account[key].sort(
+            key=lambda value: value.get("published_at") or "", reverse=True)
 
     platform_filter = set(args.platform or [])
     total_new = 0
+    stop_for_budget = False
 
     for account_key, items in by_account.items():
+        if stop_for_budget:
+            break
         platform = items[0]["platform"]
         label = items[0]["platform_label"] or PLATFORM_LABEL.get(platform, platform)
         account_name = items[0]["account_name"]
@@ -659,68 +839,121 @@ def check_comments(client, contents, args):
             continue
         recent = items if args.limit <= 0 else items[: args.limit]
         scope_text = "全部" if args.limit <= 0 else "最近"
-        print(f">>> {label} / {account_name}：检查{scope_text} {len(recent)} 条内容")
+        print(f">>> {label} / {account_name}：候选{scope_text} {len(recent)} 条内容")
 
         for item in recent:
+            if stop_for_budget:
+                break
             cid = item["content_id"]
             key_of_cid = f"{platform}:{cid}"
 
-            # ---- 可抓正文的平台：拉评论列表，对比已见评论ID ----
             if platform in COMMENT_API_PLATFORMS and client:
+                if not content_is_due(item, state, args, now=now):
+                    scan_totals["skipped_not_due"] += 1
+                    continue
                 try:
-                    all_comments, page_stats = fetch_all_comments(
-                        client, platform, item,
-                        max_pages=args.max_pages,
-                        include_replies=not args.no_replies)
+                    roots, root_pages = fetch_root_comments(
+                        client, platform, item, max_pages=args.max_pages)
+                    poll_at[key_of_cid] = now_iso
                     scan_totals["detail_contents"] += 1
-                    scan_totals["root_pages"] += page_stats["root_pages"]
-                    scan_totals["reply_pages"] += page_stats["reply_pages"]
-                    scan_totals["public_comments"] += len(all_comments)
-                    all_ids = {comment["comment_id"] for comment in all_comments}
-                    previously_seen = set(seen.get(key_of_cid, []))
+                    scan_totals["root_pages"] += root_pages
+                    scan_totals["public_comments"] += len(roots)
 
-                    # 旧版本只保存首屏。每条内容首次升级为完整分页时建立一次
-                    # 全量基线，避免把多年历史评论误报为刚刚新增。
+                    audience_roots = []
+                    for root in roots:
+                        official_root = is_official_author(
+                            root, item, official_identities)
+                        if not official_root:
+                            audience_roots.append(root)
+                            if timeline and timeline_store.record_comment(
+                                    timeline, item, root, observed_at=now_iso):
+                                scan_totals["timeline_comments_added"] += 1
+
+                        reply_key = f"{key_of_cid}:{root['comment_id']}"
+                        current_replies = max(0, to_int(root.get("reply_count"), 0))
+                        previous_replies = reply_counts.get(reply_key)
+                        root_tracked = bool(
+                            timeline and timeline_store.event_key(
+                                platform, str(root["comment_id"]))
+                            in timeline.get("events", {}))
+                        should_fetch_replies = (
+                            not args.no_replies and root_tracked and current_replies > 0
+                            and (previous_replies is None
+                                 or current_replies > int(previous_replies)))
+                        if not should_fetch_replies:
+                            if previous_replies is None:
+                                reply_counts[reply_key] = current_replies
+                            elif current_replies > int(previous_replies):
+                                # 显式关闭回复时仍推进计数基线，避免恢复后回补历史。
+                                reply_counts[reply_key] = current_replies
+                            continue
+
+                        try:
+                            replies, reply_pages = fetch_comment_replies(
+                                client, platform, item, str(root["comment_id"]),
+                                max_pages=args.max_pages)
+                            scan_totals["reply_threads_checked"] += 1
+                            scan_totals["reply_pages"] += reply_pages
+                            scan_totals["public_comments"] += len(replies)
+                            for reply in replies:
+                                if not reply.get("user_ids"):
+                                    scan_totals["unidentified_reply_authors"] += 1
+                                if is_official_author(
+                                        reply, item, official_identities) and timeline:
+                                    if timeline_store.record_official_reply(
+                                            timeline, item, root, reply,
+                                            observed_at=now_iso):
+                                        scan_totals["official_replies_added"] += 1
+                            reply_counts[reply_key] = max(
+                                current_replies, int(previous_replies or 0))
+                        except ApiBudgetExceeded:
+                            raise
+                        except Exception as exc:
+                            errors.append(
+                                f"{label} {cid} 回复 {root['comment_id']}: "
+                                f"{compact_error(exc, 100)}")
+
+                    all_ids = {comment["comment_id"] for comment in roots}
+                    previously_seen = set(seen.get(key_of_cid, []))
                     if key_of_cid not in full_scan_baselines:
                         seen[key_of_cid] = sorted(previously_seen | all_ids)
                         full_scan_baselines.add(key_of_cid)
                         if not state.get("baseline_done", False):
-                            if all_comments:
+                            if roots:
                                 print(
-                                    f"    启动基线：{len(all_comments)} 条公开评论/回复，"
-                                    f"一级 {page_stats['root_pages']} 页，"
-                                    f"回复 {page_stats['reply_pages']} 页")
+                                    f"    启动基线：{len(roots)} 条公开一级评论，"
+                                    f"共 {root_pages} 页")
                             continue
-
-                        # 服务基线完成后才发现的新内容：只提醒明确发布于
-                        # monitor_started_at 之后的评论，其余作为存量基线。
                         new_comments = [
-                            comment for comment in all_comments
+                            comment for comment in audience_roots
                             if comment_created_after(
                                 comment, state.get("monitor_started_at"))]
-                        if all_comments and not new_comments:
-                            print(
-                                f"    新内容存量基线：{len(all_comments)} 条，"
-                                "无启动时刻后的可靠时间戳评论")
                     else:
                         new_comments = [
-                            comment for comment in all_comments
+                            comment for comment in audience_roots
                             if comment["comment_id"] not in previously_seen]
                         seen[key_of_cid] = sorted(previously_seen | all_ids)
                     if new_comments:
                         entry = dict(item)
                         entry["comments"] = new_comments
-                        entry["scan_pages"] = page_stats
+                        entry["scan_pages"] = {
+                            "root_pages": root_pages,
+                            "reply_pages": 0,
+                            "comments": len(roots),
+                        }
                         entry["platform_label"] = label
                         new_items.append(entry)
                         total_new += len(new_comments)
-                except Exception as e:
-                    errors.append(f"{label} {cid}: {compact_error(e, 120)}")
+                except ApiBudgetExceeded as exc:
+                    errors.append(str(exc))
+                    scan_totals["budget_exhausted"] = True
+                    stop_for_budget = True
+                except Exception as exc:
+                    errors.append(f"{label} {cid}: {compact_error(exc, 120)}")
             elif platform in COMMENT_API_PLATFORMS \
                     and not (getattr(args, "dry_run", False)
                              or getattr(args, "no_api", False)):
                 errors.append(f"{label}: 未配置 TIKHUB_API_KEY，无法检查评论明细")
-            # ---- 仅计数的平台：对比评论数增长 ----
             else:
                 current = item.get("stats_comment")
                 last = counts.get(key_of_cid)
@@ -734,12 +967,15 @@ def check_comments(client, contents, args):
                 if current is not None:
                     counts[key_of_cid] = current
 
-    state["seen_comments"] = {k: list(v) for k, v in seen.items()}
+    state["seen_comments"] = {key: list(value) for key, value in seen.items()}
     state["content_counts"] = counts
+    state["content_poll_at"] = poll_at
+    state["root_reply_counts"] = reply_counts
     state["full_scan_baselines"] = sorted(full_scan_baselines)
-    state["last_checked_at"] = datetime.now(CN_TZ).isoformat()
+    state["last_checked_at"] = now_iso
     state["last_scan"] = {
         **scan_totals,
+        "api_calls": (getattr(client, "call_count", 0) - calls_before) if client else 0,
         "errors": len(errors),
         "complete": not errors,
     }
@@ -899,10 +1135,12 @@ def _next_page_params(platform, response, current):
     raise ValueError(f"不支持分页的平台: {platform}")
 
 
-def _request_comment_page(client, endpoint, params):
+def _request_comment_page(client, endpoint, params, usage_task):
     if endpoint["method"] == "post":
-        return client.request("POST", endpoint["path"], payload=params)
-    return client.request("GET", endpoint["path"], params=params)
+        return client.request(
+            "POST", endpoint["path"], payload=params, usage_task=usage_task)
+    return client.request(
+        "GET", endpoint["path"], params=params, usage_task=usage_task)
 
 
 def _validate_comment_page(platform, response):
@@ -943,7 +1181,8 @@ def _dedupe_comments(comments):
     return result
 
 
-def _fetch_pages(client, platform, endpoint, initial_params, max_pages, parent_id=""):
+def _fetch_pages(client, platform, endpoint, initial_params, max_pages, parent_id="",
+                 usage_task="comment_roots"):
     comments = []
     params = initial_params
     page_count = 0
@@ -953,7 +1192,7 @@ def _fetch_pages(client, platform, endpoint, initial_params, max_pages, parent_i
         if fingerprint in visited:
             raise RuntimeError(f"{PLATFORM_LABEL.get(platform, platform)} 分页游标重复")
         visited.add(fingerprint)
-        response = _request_comment_page(client, endpoint, params)
+        response = _request_comment_page(client, endpoint, params, usage_task)
         _validate_comment_page(platform, response)
         page_count += 1
         page_comments = PARSERS[platform](response)
@@ -971,11 +1210,23 @@ def _fetch_pages(client, platform, endpoint, initial_params, max_pages, parent_i
         params = next_params
 
 
-def fetch_all_comments(client, platform, item, max_pages=200, include_replies=True):
-    """完整分页拉取一级评论，并按回复数继续完整拉取二级回复。"""
-    roots, pages = _fetch_pages(
+def fetch_root_comments(client, platform, item, max_pages=200):
+    return _fetch_pages(
         client, platform, COMMENT_API_PLATFORMS[platform],
-        _initial_root_request(platform, item), max_pages)
+        _initial_root_request(platform, item), max_pages,
+        usage_task="comment_roots")
+
+
+def fetch_comment_replies(client, platform, item, root_id, max_pages=200):
+    return _fetch_pages(
+        client, platform, REPLY_API_PLATFORMS[platform],
+        _initial_reply_request(platform, item, root_id), max_pages,
+        parent_id=root_id, usage_task="comment_replies")
+
+
+def fetch_all_comments(client, platform, item, max_pages=200, include_replies=True):
+    """兼容全量入口；正式监控使用回复数变化驱动的条件采集。"""
+    roots, pages = fetch_root_comments(client, platform, item, max_pages=max_pages)
     comments = list(roots)
     reply_pages = 0
     if include_replies:
@@ -983,10 +1234,8 @@ def fetch_all_comments(client, platform, item, max_pages=200, include_replies=Tr
             if to_int(root.get("reply_count"), 0) <= 0:
                 continue
             root_id = str(root["comment_id"])
-            replies, used_pages = _fetch_pages(
-                client, platform, REPLY_API_PLATFORMS[platform],
-                _initial_reply_request(platform, item, root_id), max_pages,
-                parent_id=root_id)
+            replies, used_pages = fetch_comment_replies(
+                client, platform, item, root_id, max_pages=max_pages)
             comments.extend(replies)
             reply_pages += used_pages
     return _dedupe_comments(comments), {
@@ -1202,7 +1451,7 @@ def main():
     ap.add_argument("--max-pages", type=int, default=200,
                     help="每条内容及每个回复线程最多翻页数；超限视为失败（默认 200）")
     ap.add_argument("--no-replies", action="store_true",
-                    help="只采集一级评论，不继续采集二级回复")
+                    help="完全关闭官方回复检测")
     ap.add_argument("--no-discovery", action="store_true",
                     help="不在评论任务中检查各账号最新一页内容")
     ap.add_argument("--platform", action="append",
@@ -1210,12 +1459,31 @@ def main():
     ap.add_argument("--recipient", default=DEFAULT_RECIPIENT, help="收件人邮箱")
     ap.add_argument("--max-age-days", type=int, default=0,
                     help="只看最近 N 天内发布的内容；0 表示全部（默认 0）")
+    ap.add_argument("--fresh-days", type=int, default=7,
+                    help="新内容分层天数（默认 7）")
+    ap.add_argument("--recent-days", type=int, default=30,
+                    help="近期内容分层天数（默认 30）")
+    ap.add_argument("--fresh-hours", type=int, default=2,
+                    help="新内容轮询间隔小时（默认 2）")
+    ap.add_argument("--recent-hours", type=int, default=6,
+                    help="近期内容轮询间隔小时（默认 6）")
+    ap.add_argument("--older-hours", type=int, default=24,
+                    help="较旧内容轮询间隔小时（默认 24）")
+    ap.add_argument("--discovery-hours", type=int, default=2,
+                    help="新作品发现间隔小时（默认 2）")
+    ap.add_argument("--no-tiered-polling", action="store_false",
+                    dest="tiered_polling", default=True,
+                    help="关闭按内容年龄分层轮询")
     ap.add_argument("--no-api", action="store_true",
                     help="不调用 TikHub 评论接口，仅做评论数对比（无正文）")
     args = ap.parse_args()
 
     load_dotenv()
+    now = datetime.now(CN_TZ)
+    state = load_state()
     contents = build_content_list(max_age_days=args.max_age_days)
+    contents = merge_cached_discoveries(
+        contents, state, args.max_age_days, now=now)
     print(f"内容清单：{len(contents)} 条（来自两个大屏数据）")
 
     # 按平台统计
@@ -1234,16 +1502,32 @@ def main():
             client = TikHubClient(api_key)
 
     discovery_errors = []
-    if client and not args.no_discovery:
-        contents, additions, discovery_errors = discover_latest_contents(client, contents)
-        print(f"小时级新内容发现：新增 {len(additions)} 条内容")
+    if client and discovery_is_due(state, args, now=now):
+        state["last_discovery_attempt_at"] = now.isoformat()
+        try:
+            contents, additions, discovery_errors = discover_latest_contents(client, contents)
+            cache_discoveries(state, additions)
+            print(f"新内容发现：新增 {len(additions)} 条内容")
+        except ApiBudgetExceeded as exc:
+            discovery_errors.append(str(exc))
+    elif client and not args.no_discovery:
+        print(f"新内容发现：未到 {args.discovery_hours} 小时周期，本轮跳过")
 
-    new_items, errors, state = check_comments(client, contents, args)
+    timeline = timeline_store.load_timeline(now=now)
+    new_items, errors, state = check_comments(
+        client, contents, args, state=state, timeline=timeline,
+        official_identities=load_official_identities(), now=now)
     errors = discovery_errors + errors
     total_new = sum(len(i.get('comments', [])) or i.get('added_count', 0)
                     for i in new_items)
     is_baseline = not state.get("baseline_done", False)
     print(f"\n本轮共发现新增评论：{total_new} 条")
+
+    def save_runtime():
+        usage = client.budget.snapshot() if client else ApiBudget().snapshot()
+        timeline_store.save_timeline(
+            timeline, api_usage=usage, last_scan=state.get("last_scan"))
+        save_state(state)
 
     if errors:
         print("\n以下内容检查失败：", file=sys.stderr)
@@ -1258,7 +1542,7 @@ def main():
             return
         state["baseline_done"] = True
         state["baseline_at"] = datetime.now(CN_TZ).isoformat()
-        save_state(state)
+        save_runtime()
         print("\n[首次运行] 已记录现有评论作为基线，"
               "从下一次运行开始检测新评论并邮件提醒。")
         print(f"  基线记录内容数：{len(state.get('seen_comments', {}))} 条")
@@ -1282,7 +1566,10 @@ def main():
             print("主题：", subject)
             print(body)
         else:
-            # 先可靠写入待发队列，再推进评论游标，避免写队列失败导致提醒永久丢失。
+            # 时间线先落盘；待发队列成功后再推进评论状态。
+            timeline_store.save_timeline(
+                timeline, api_usage=client.budget.snapshot() if client else ApiBudget().snapshot(),
+                last_scan=state.get("last_scan"))
             emails, unmapped_count = write_alerts(new_items)
             save_state(state)
             if emails:
@@ -1297,7 +1584,7 @@ def main():
                 print(f"  未映射平台数量：{unmapped_count}")
     else:
         if not args.dry_run:
-            save_state(state)
+            save_runtime()
         # 不删除既有待发队列；发送失败的邮件必须由发送器继续重试。
         print("\n本轮没有新评论，无需提醒。")
 
