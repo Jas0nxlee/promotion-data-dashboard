@@ -27,10 +27,17 @@ def record_verification(key, settings, result=None, error=None, directory=None):
              "content_count": len(result.records) if result else 0,
              "comments_verified": False, "replies_verified": False}
     platform = key.split(":", 1)[0]
-    required = settings.get("required_metrics", ["like", "comment"] if platform in {"bilibili", "douyin", "xiaohongshu", "zhihu"} else [])
+    defaults = (["comment"] if settings.get("provider") == "wechat_browser" else
+                ["like", "comment"] if platform in {"bilibili", "douyin", "xiaohongshu", "zhihu"} else [])
+    required = settings.get("required_metrics", defaults)
+    required_extra = settings.get("required_extra_metrics", ["read_users", "like_users", "share_users"]
+                                  if settings.get("provider") == "wechat_browser" else [])
     records = result.records if result else []
     coverage = {metric: sum(row.get("stats", {}).get(metric) is not None for row in records) / len(records)
                 if records else 1.0 for metric in required}
+    coverage.update({"extra_metrics." + metric: sum(row.get("extra_metrics", {}).get(metric) is not None
+                                                    for row in records) / len(records) if records else 1.0
+                     for metric in required_extra})
     value["metric_coverage"] = coverage
     value["metrics_verified"] = bool(result) and all(rate >= 0.95 for rate in coverage.values())
     if previous.get("config_fingerprint") == value["config_fingerprint"]:

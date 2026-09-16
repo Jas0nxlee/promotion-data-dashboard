@@ -163,6 +163,19 @@ def load_json(path):
 # 内容清单构建：从大屏数据提取所有内容
 # ---------------------------------------------------------------------------
 
+def comment_count_metadata(record):
+    provenance = dig(record, "metric_provenance.comment", default={})
+    provenance = provenance if isinstance(provenance, dict) else {}
+    return {
+        "data_source": record.get("data_source") or "",
+        "comment_definition": provenance.get("definition") or "",
+        "comment_metric_source": provenance.get("source") or "",
+        "snapshot_state": record.get("snapshot_state") or "",
+        "comment_is_cached": (provenance.get("source") == "cached"
+                              or "stats.comment" in (record.get("cached_fields") or [])),
+    }
+
+
 def build_content_list(max_age_days=0):
     """从两个大屏 JSON 构建统一内容清单。
 
@@ -187,6 +200,7 @@ def build_content_list(max_age_days=0):
             "content_type": "视频",
             "stats_comment": to_int(dig(v, "stats.comment")),
             "primary_account_key": v.get("primary_account_key", ""),
+            **comment_count_metadata(v),
         })
 
     article_data = load_json(ARTICLE_DATA) or {}
@@ -204,6 +218,7 @@ def build_content_list(max_age_days=0):
             "published_at": a.get("published_at", ""),
             "content_type": a.get("content_type", "图文"),
             "stats_comment": to_int(dig(a, "stats.comment")),
+            **comment_count_metadata(a),
         })
 
     # 过滤：无 ID、时间过早、无 URL（评论需要可访问的内容）
@@ -610,6 +625,8 @@ def load_state():
         state["seen_comments"] = {}
     if "content_counts" not in state:
         state["content_counts"] = {}
+    if "content_count_origins" not in state:
+        state["content_count_origins"] = {}
     if "content_poll_at" not in state:
         state["content_poll_at"] = {}
     if "root_reply_counts" not in state:
@@ -626,6 +643,7 @@ def load_state():
         state["baseline_done"] = False
         state["full_scan_baselines"] = []
         state["content_counts"] = {}
+        state["content_count_origins"] = {}
     return state
 
 
@@ -700,6 +718,7 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
         for comment_id in ids
     }
     counts = state.get("content_counts", {})
+    count_origins = state.get("content_count_origins", {})
     poll_at = state.get("content_poll_at", {})
     reply_counts = state.get("root_reply_counts", {})
     full_scan_baselines = set(state.get("full_scan_baselines", []))
@@ -859,8 +878,27 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                 errors.append(f"{label}: 未配置平台数据源，无法检查评论明细")
             else:
                 current = item.get("stats_comment")
-                last = counts.get(key_of_cid)
-                if current is not None and last is not None and current > last:
+                count_key = key_of_cid
+                comparable = True
+                if platform not in COMMENT_API_PLATFORMS:
+                    # Message IDs such as公众号 mid-idx are not unique across
+                    # accounts. Never infer an owner for legacy platform-only keys.
+                    owner = item.get("account_key") or ""
+                    if not owner.startswith(platform + ":") or not owner[len(platform) + 1:]:
+                        continue
+                    if (item.get("snapshot_state") == "cached" or item.get("comment_is_cached")
+                            or item.get("comment_metric_source") == "cached" or current is None):
+                        continue
+                    count_key = f"{owner}:{cid}"
+                    origin = {field: item.get(field) or "" for field in
+                              ("data_source", "comment_definition", "comment_metric_source")}
+                    # Missing metadata remains compatible only with another
+                    # missing-metadata sample under this exact account key.
+                    previous_origin = count_origins.get(count_key, dict.fromkeys(origin, ""))
+                    comparable = previous_origin == origin
+                    count_origins[count_key] = origin
+                last = counts.get(count_key)
+                if comparable and current is not None and last is not None and current > last:
                     entry = dict(item)
                     entry["comments"] = []
                     entry["added_count"] = current - last
@@ -868,10 +906,11 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                     new_items.append(entry)
                     total_new += entry["added_count"]
                 if current is not None:
-                    counts[key_of_cid] = current
+                    counts[count_key] = current
 
     state["seen_comments"] = {key: list(value) for key, value in seen.items()}
     state["content_counts"] = counts
+    state["content_count_origins"] = count_origins
     state["content_poll_at"] = poll_at
     state["root_reply_counts"] = reply_counts
     state["full_scan_baselines"] = sorted(full_scan_baselines)

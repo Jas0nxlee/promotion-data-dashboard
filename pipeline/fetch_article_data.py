@@ -1257,8 +1257,24 @@ def collect(args):
                 articles = [{**article, "snapshot_state": "current"} for article in articles]
                 restored = 0
                 if entry.get("status") == "partial" and cached_articles:
+                    merge_cache = cached_articles
+                    if (account["platform"] in {"wechat_service", "wechat_subscription"}
+                            and entry.get("data_source") == "wechat_browser"
+                            and entry.get("account_key") == key
+                            and entry.get("verified_account_id") == account.get("platform_uid")
+                            and account.get("platform_uid")):
+                        excluded_ids = {
+                            str(row["article_id"]) for row in entry.get("excluded_contents", [])
+                            if isinstance(row, dict) and row.get("article_id")
+                            and row.get("account_key", key) == key
+                            and row.get("reason") in {"deleted", "standalone_channels_video"}
+                        }
+                        # These rows were actually inspected and excluded. Keep
+                        # unseen history, and retain the original cache for errors.
+                        merge_cache = [row for row in cached_articles
+                                       if str(row.get("article_id")) not in excluded_ids]
                     articles, restored = merge_records(
-                        articles, cached_articles, "article_id")
+                        articles, merge_cache, "article_id")
                     entry["covered_articles"] = len(articles)
                     if entry.get("total_articles") is not None:
                         entry["total_articles"] = max(entry["total_articles"], len(articles))
@@ -1408,8 +1424,8 @@ def main():
     parser.add_argument("--public-interval", type=float, default=0.15,
                         help="公开页面请求最小间隔秒数")
     parser.add_argument("--max-pages", type=int, default=80, help="单账号最大翻页数")
-    parser.add_argument("--wechat-pages", type=int, default=80,
-                        help="每个公众号每种内容最多采集页数，每页最多 20 条（默认 80）")
+    parser.add_argument("--wechat-pages", type=int, default=200,
+                        help="每个公众号最多分页数；后台每页10组，官方接口每页最多20组（默认200）")
     parser.add_argument("--resolve-wechat", action="store_true",
                         help="兼容旧参数；账号身份改由登录资料核验，不再搜索")
     parser.add_argument("--wechat-stats-limit", type=int, default=0,

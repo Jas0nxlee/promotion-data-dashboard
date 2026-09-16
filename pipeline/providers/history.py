@@ -144,6 +144,8 @@ def retain_known(records, previous, id_field):
     for original in records:
         row = copy.deepcopy(original)
         old = cached.get(str(row.get(id_field)), {})
+        if isinstance(old.get("historical_metrics"), dict):
+            row.setdefault("historical_metrics", copy.deepcopy(old["historical_metrics"]))
         restored = []
         for field in ("published_at", "cover", "url", "title", "source_author", "source_author_id", "aid", "cid"):
             if row.get(field) in (None, "") and old.get(field) not in (None, ""):
@@ -152,6 +154,11 @@ def retain_known(records, previous, id_field):
         for metric, value in row.get("stats", {}).items():
             historical = old.get("stats", {}).get(metric)
             if value is None and historical is not None:
+                if row.get("metric_provenance", {}).get(metric, {}).get("missing_reason") == "incompatible_unit":
+                    row.setdefault("historical_metrics", {})[metric] = {
+                        "value": historical, "source": old.get("data_source"),
+                        "fetched_at": old.get("fetched_at"), "reason": "incompatible_unit"}
+                    continue
                 row["stats"][metric] = historical
                 row.setdefault("metric_provenance", {})[metric] = {
                     "source": "cached", "fetched_at": old.get("fetched_at"),

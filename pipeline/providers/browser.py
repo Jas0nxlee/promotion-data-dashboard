@@ -96,19 +96,23 @@ class BrowserSource:
                             raise ProviderError("session_expired", "测试浏览器没有可用会话")
                         context, connected = browser.contexts[0], True
                 if context is None:
+                    # Deployment images can select their installed browser while
+                    # keeping portable account settings compatible with local Chrome.
+                    launch_channel = (os.environ.get("PROMOTION_BROWSER_CHANNEL", "").strip()
+                                      or self.settings.get("channel", "chromium"))
                     portable = SESSIONS / (session_key(self.key) + ".storage.json")
                     profile = SESSIONS / session_key(self.key)
                     if self.settings.get("session_mode") == "portable":
                         if not portable.is_file():
                             raise ProviderError("session_expired", "缺少导出的可移植会话，请先运行 export-session")
-                        launched_browser = driver.chromium.launch(headless=not self.settings.get("headed", False), channel=self.settings.get("channel", "chromium"))
+                        launched_browser = driver.chromium.launch(headless=not self.settings.get("headed", False), channel=launch_channel)
                         context = launched_browser.new_context(storage_state=str(portable), locale="zh-CN", timezone_id="Asia/Shanghai")
                     elif not profile.is_dir():
                         raise ProviderError("session_expired", "尚未建立独立登录会话，请运行 provider_setup login")
                     else:
                         context = driver.chromium.launch_persistent_context(
                             str(profile), headless=not self.settings.get("headed", False),
-                            channel=self.settings.get("channel", "chromium"),
+                            channel=launch_channel,
                             ignore_default_args=["--password-store=basic", "--use-mock-keychain"],
                             locale="zh-CN", timezone_id="Asia/Shanghai")
                 self.context = context

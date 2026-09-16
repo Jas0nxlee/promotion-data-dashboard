@@ -21,6 +21,35 @@ from providers.health import read_verification
 from providers.base import ProviderError
 
 
+NATIVE_PROVIDERS = {
+    "bilibili": "bilibili_creator", "douyin": "douyin_creator",
+    "wechat_channels": "wechat_channels_creator", "xiaohongshu": "xiaohongshu_creator",
+    "zhihu": "zhihu_creator",
+    "wechat_service": "wechat_browser", "wechat_subscription": "wechat_browser",
+}
+# Upgrade only the old login placeholder shape. Unknown fields, even empty
+# recipe/mapping fields, may represent a user's unfinished custom configuration.
+PLACEHOLDER_FIELDS = {
+    "provider", "channel", "cdp_url", "session_mode", "headed", "timeout_ms", "request_interval",
+    "expected_uid", "expected_sph", "expected_finder_id", "comment_identity_compatible",
+    "replaces_platform_uid", "required_metrics", "required_extra_metrics", "expected_biz", "last_verification",
+}
+
+
+def onboarding_settings(account, settings):
+    """Promote untouched login placeholders only during explicit onboarding."""
+    result = dict(settings)
+    native = NATIVE_PROVIDERS.get(account["platform"])
+    if native and result.get("provider", "browser") == "browser" and not (result.keys() - PLACEHOLDER_FIELDS):
+        result["provider"] = native
+    result.setdefault("provider", "browser")
+    if result["provider"] == "bilibili_creator":
+        result.setdefault("expected_uid", str(account["platform_uid"]))
+    elif result["provider"] == "wechat_channels_creator":
+        result.setdefault("expected_sph", str(account["platform_uid"]))
+    return result
+
+
 class Panel:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
@@ -66,12 +95,7 @@ class Panel:
             if not chrome:
                 raise ProviderError("browser_missing", "请安装可见桌面 Chrome/Chromium 后登录")
             subprocess.Popen([chrome, *args], start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        defaults = {"bilibili": "bilibili_creator", "douyin": "douyin_creator", "wechat_channels": "wechat_channels_creator", "xiaohongshu": "xiaohongshu_creator", "zhihu": "zhihu_creator"}
-        current.setdefault("provider", defaults.get(account["platform"], "browser"))
-        if account["platform"] == "bilibili":
-            current["expected_uid"] = str(account["platform_uid"])
-        if account["platform"] == "wechat_channels":
-            current.setdefault("expected_sph", str(account["platform_uid"]))
+        current = onboarding_settings(account, current)
         current.update({"channel": "chrome", "cdp_url": f"http://127.0.0.1:{port}"})
         current.setdefault("comment_identity_compatible", False)
         self.store.update(key, current)
@@ -90,7 +114,10 @@ class Panel:
                    "PROMOTION_SESSION_DIR": str(SESSIONS), "PROMOTION_PROVIDER_CONFIG": str(PROVIDER_CONFIG)}
             try:
                 settings = self.store.read()["accounts"].get(key, {})
-                if key.startswith("wechat_channels:") and not settings.get("expected_finder_id"):
+                upgraded = onboarding_settings(accounts()[key], settings)
+                if upgraded != settings:
+                    settings = self.store.update(key, upgraded)
+                if settings.get("provider") == "wechat_channels_creator" and not settings.get("expected_finder_id"):
                     binding = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "bind-channels", "--account", key],
                                              env=env, capture_output=True, text=True, timeout=120)
                     if binding.returncode:
@@ -104,8 +131,8 @@ class Panel:
                         self.jobs[key] = {"running": False, "success": False, "message": "登录会话更新未完成，请确认独立浏览器中的账号身份"}
                         return
                 result = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "probe", "--account", key,
-                                         "--max-pages", "20", "--output", str(destination)], env=env,
-                                        capture_output=True, text=True, timeout=180)
+                                         "--max-pages", "200", "--output", str(destination)], env=env,
+                                        capture_output=True, text=True, timeout=1800)
                 message = "验证结果已保存；以覆盖检查为准" if result.returncode == 0 else "未完成，请检查登录状态与采集配置"
                 self.jobs[key] = {"running": False, "success": result.returncode == 0, "message": message}
             except subprocess.TimeoutExpired:

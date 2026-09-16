@@ -614,6 +614,28 @@ const DETAIL_COLS = [
   ["comment", "评论"], ["collect", "收藏"], ["share", "分享"],
 ];
 
+const MP_DETAIL_METRICS = [
+  ["read_users", "阅读人数", "人"], ["like_users", "点赞人数", "人"],
+  ["share_users", "分享人数", "人"], ["recommend_users", "推荐人数", "人"],
+  ["root_comments", "一级评论", "条"],
+];
+
+function hasMpPeopleMetrics(article) {
+  return ["wechat_service", "wechat_subscription"].includes(article.platform)
+    && MP_DETAIL_METRICS.some(([key]) => Object.prototype.hasOwnProperty.call(article.extra_metrics || {}, key));
+}
+
+function mpPeopleMetrics(article) {
+  if (!hasMpPeopleMetrics(article)) return "";
+  return `<div class="mp-people-metrics" aria-label="公众号单篇人数与一级评论">
+    <div class="mp-metric-caption">公众号后台 · 人数按单篇统计</div>
+    <dl>${MP_DETAIL_METRICS.map(([key, label, unit]) => {
+      const value = num(article.extra_metrics?.[key]);
+      return `<div><dt>${label}</dt><dd class="${value === null ? "muted-val" : ""}">${fmtFull(value)}${value === null ? "" : `<span>${unit}</span>`}</dd></div>`;
+    }).join("")}</dl>
+  </div>`;
+}
+
 function detailValue(article, key) {
   if (key === "title") return article.title || "";
   if (key === "platform") return article.platform_label || platformLabel(article.platform);
@@ -687,9 +709,11 @@ function renderDetail(articles) {
     }).join("")}</tr></thead>
     <tbody>${pageRows.map((article) => {
       const url = safeUrl(article.url);
+      const people = mpPeopleMetrics(article);
+      const title = url ? `<a href="${url}" target="_blank" rel="noopener">${esc(article.title)}</a>` : esc(article.title);
       return `
         <tr>
-          <td class="cell-title" title="${esc(article.title)}">${url ? `<a href="${url}" target="_blank" rel="noopener">${esc(article.title)}</a>` : esc(article.title)}</td>
+          <td class="cell-title${people ? " has-mp-metrics" : ""}" title="${esc(article.title)}">${people ? `<div class="article-title">${title}</div>${people}` : title}</td>
           <td><span class="tag tag-${esc(article.platform)}">${esc(article.platform_label || platformLabel(article.platform))}</span></td>
           <td>${esc(article.account_name)}<span class="tag tag-line" style="margin-left:4px">${esc(article.business_line)}</span></td>
           <td>${dayOf(article.published_at)}</td>
@@ -771,6 +795,7 @@ function initFilters() {
 function refresh() {
   const associations = filteredArticles();
   const articles = uniqueArticles(associations);
+  $("peopleMetricNote").hidden = !articles.some(hasMpPeopleMetrics);
   renderFilterSummary(associations, articles);
   renderKPI(articles, associations);
   renderDist(articles);

@@ -38,7 +38,7 @@ def status():
         required = ["profile", "contents"]
         if a["platform"] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}:
             required.extend(["comments", "replies"])
-        missing = [] if config.get("provider") in {"bilibili_creator", "douyin_creator", "wechat_channels_creator", "xiaohongshu_creator", "zhihu_creator", "wechat_official"} else [x for x in required if x not in config.get("workflows", {})]
+        missing = [] if config.get("provider") in {"bilibili_creator", "douyin_creator", "wechat_channels_creator", "xiaohongshu_creator", "zhihu_creator", "wechat_official", "wechat_browser"} else [x for x in required if x not in config.get("workflows", {})]
         result.append({"account": key, "configured": bool(config),
                        "missing_workflows": missing, "session_saved": (SESSIONS / session_key(key)).is_dir(),
                        "comment_identity_verified": config.get("comment_identity_compatible") is True,
