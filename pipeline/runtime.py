@@ -18,7 +18,7 @@ def _load_configuration_env():
 
 _load_configuration_env()
 RUNTIME = Path(os.environ.get("PROMOTION_RUNTIME_DIR", str(ROOT))).expanduser().resolve()
-DATA = RUNTIME / "data"
+DATA = Path(os.environ.get("PROMOTION_DATA_DIR", str(RUNTIME / "data"))).expanduser().resolve()
 WEB = RUNTIME / "web"
 SESSIONS = Path(os.environ.get("PROMOTION_SESSION_DIR", str(ROOT / ".runtime" / "sessions"))).expanduser().resolve()
 PROVIDER_CONFIG = Path(os.environ.get("PROMOTION_PROVIDER_CONFIG", str(ROOT / ".runtime" / "providers.json"))).expanduser().resolve()

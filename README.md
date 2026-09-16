@@ -123,7 +123,19 @@ COMMENT_RECIPIENT_CSDN=disabled
 COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"},"douyin":"b@example.com"}
 ```
 
-### 3. 构建并启动
+### 3. 初始化 Docker 授权
+
+先在交互终端初始化管理员密码与配置目录。存在本机旧配置时显式迁移，原文件保持不变：
+
+```bash
+python3 scripts/init_authorization.py --migrate-provider-file .runtime/providers.json
+docker compose --profile login build login
+docker compose --profile login up -d --no-deps login
+```
+
+新安装没有旧配置时省略迁移参数。在 `http://127.0.0.1:18762/` 登录管理页面，选择账号扫码，点击“验证并保存”；只有身份、会话恢复及采集验证通过才会替换正式会话。远程服务器可通过SSH转发访问。公开采集账号无需扫码。详见 [Docker授权与重新授权说明](docs/DOCKER_AUTHORIZATION.md)。
+
+### 4. 构建并启动采集服务
 
 ```bash
 docker compose build
@@ -144,13 +156,7 @@ docker compose ps
 DASHBOARD_PORT=8080
 ```
 
-如果 Docker CLI 没有 buildx：
-
-```bash
-docker build -f Dockerfile.frontend -t promotion-dashboard-frontend .
-docker build -f Dockerfile.collector -t promotion-dashboard-scheduler .
-docker compose up -d --no-build
-```
+构建需要 Docker Buildx 和 Compose 2.17+；缺少插件时先安装对应官方插件，不使用旧版构建器替代。
 
 更多部署、检查和运维命令见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
@@ -350,3 +356,5 @@ docker compose config --quiet
 - 指标定义、去重规则和质量保护见 [DASHBOARD_AUDIT.md](DASHBOARD_AUDIT.md)。
 - Docker部署和故障处理见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 - 图文账号原始标识核对表见 [图文及文章.md](图文及文章.md)。
+
+账号扫码、重新授权、超时与故障恢复操作见 [授权操作说明](docs/AUTHORIZATION_OPERATIONS.md)。

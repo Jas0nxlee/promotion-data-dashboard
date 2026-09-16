@@ -29,7 +29,7 @@ def denied(*a, **k):
 requests.sessions.Session.request = denied
 smtplib.SMTP = smtplib.SMTP_SSL = denied
 ''')
-            env = {**os.environ, "PROMOTION_RUNTIME_DIR": tmp, "PROMOTION_TEST_MODE": "1",
+            env = {**os.environ, "PROMOTION_RUNTIME_DIR": tmp, "PROMOTION_DATA_DIR": str(Path(tmp) / "data"), "PROMOTION_TEST_MODE": "1",
                    "PROMOTION_PROVIDER_CONFIG": str(runtime / "providers.json"),
                    "PROMOTION_SESSION_DIR": str(runtime / "sessions"), "PYTHONPATH": str(guard)}
             env.pop("TIKHUB_API_KEY", None)

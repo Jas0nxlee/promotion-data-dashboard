@@ -13,6 +13,7 @@ import fcntl
 
 from runtime import SESSIONS, DATA
 from .base import ProviderError, Pages, pick, number
+from .authorization import AuthorizationStore, AUTHENTICATION_ERRORS
 from api_budget import ApiBudget, ApiBudgetExceeded
 
 
@@ -74,7 +75,13 @@ class BrowserSource:
 
     @contextmanager
     def session(self):
+        authorization = AuthorizationStore(SESSIONS / "authorization")
+        bypass_authorization = os.environ.get("PROMOTION_AUTHORIZATION_OPERATION") == "1"
+        if not bypass_authorization:
+            authorization.guard(self.key)
         with account_lock(self.key):
+            if not bypass_authorization:
+                authorization.guard(self.key)
             from playwright.sync_api import sync_playwright
             driver = sync_playwright().start()
             context = None
@@ -120,7 +127,18 @@ class BrowserSource:
                 yield self
                 if self.settings.get("session_mode") == "portable":
                     self.export_session()
-            except (ProviderError, ApiBudgetExceeded):
+            except ProviderError as exc:
+                if (exc.reason in AUTHENTICATION_ERRORS
+                        and getattr(exc, "authorization_guard", False) is not True
+                        and getattr(exc, "authorization_error_recorded", False) is not True):
+                    state = authorization.require_reauthorization(self.key, exc.reason, str(exc))
+                    # This transition happens while the account lock is held.
+                    # Downstream health writers must not repeat it after a newer
+                    # authorization operation has replaced the failed session.
+                    exc.authorization_error_recorded = True
+                    exc.authorization_operation_id = state.get("operation_id")
+                raise
+            except ApiBudgetExceeded:
                 raise
             except Exception as exc:
                 raise ProviderError("browser_error", f"浏览器操作失败（{type(exc).__name__}），请检查会话及采集配置") from None

@@ -152,7 +152,7 @@ PROMOTION_RUNTIME_DIR="$PWD/.runtime/local" PROMOTION_TEST_MODE=1 \
 .venv/bin/python pipeline/provider_setup.py export-session --account 'bilibili:望获OS'
 ```
 
-程序先验证身份，再仅导出该平台的 Cookies 和浏览器本地状态，文件权限为600。生产配置可设置 `session_mode=portable`、`channel=chromium`，并移除本机调试用的 `cdp_url`。镜像默认设置 `PROMOTION_BROWSER_CHANNEL=chromium`，覆盖本机账号保存的 Chrome 通道以匹配镜像已安装浏览器；本机未设置该变量时仍沿用账号配置。Compose 通过 `PROMOTION_PROVIDER_FILE` 选择配置文件，同时挂载私有会话目录，不将它们写入镜像。可移植会话已在本机的新浏览器上下文验证；跨机器、跨IP仍可能触发重新授权，必须先做目标环境只读测试。
+程序先验证身份，再仅导出该平台的 Cookies 和浏览器本地状态，文件权限为600。生产配置可设置 `session_mode=portable`、`channel=chromium`，并移除本机调试用的 `cdp_url`。镜像默认设置 `PROMOTION_BROWSER_CHANNEL=chromium`，覆盖本机账号保存的 Chrome 通道以匹配镜像已安装浏览器；本机未设置该变量时仍沿用账号配置。Compose 通过 `PROMOTION_PROVIDER_DIR` 选择包含 providers.json 的目录，同时挂载私有会话目录，不将它们写入镜像。可移植会话已在本机的新浏览器上下文验证；跨机器、跨IP仍可能触发重新授权，必须先做目标环境只读测试。
 
 微信稳定令牌规则已按[微信官方文档](https://developers.weixin.qq.com/doc/subscription/api/base/api_getstableaccesstoken.html)核对。实际开通权限、IP白名单和管理员确认仍需该账号完成。
 
@@ -198,3 +198,12 @@ PROMOTION_RUNTIME_DIR="$PWD/.runtime/local" PROMOTION_TEST_MODE=1 \
 只读验证不合并或覆盖大屏快照，也不触发邮件。来源、指标与尚未验证的账号清单见 [图文验收清单](ARTICLE_PLATFORM_STATUS.md)。
 
 图文常规采集、公众号与头条的默认分页上限现均为200，避免百家号超过原80页或头条超过原20页后每天只得到部分目录。超过200页仍明确失败或部分采集，不伪称全量；已有 `.env` 覆盖值需要部署时同步检查。
+
+
+## Docker 可视化授权与重新授权
+
+参见 [Docker授权说明](DOCKER_AUTHORIZATION.md)。服务器使用独立login服务；授权期间只暂停当前账号，其他账号继续。完成扫码不直接替换正式会话：先在候选目录验证身份、恢复到新浏览器、完整采集并验证需要的评论站点，再原子提交。失败、取消或超时保留旧会话并等待重新授权；服务崩溃通过私有事务记录恢复未提交的配置/会话/验证证据。
+
+管理员入口、noVNC和WebSocket统一认证，仅发布回环端口；不开放VNC或CDP。可移植会话和授权状态通过同一个私有挂载在采集器与login服务之间共享，配置使用目录挂载以支持原子替换。
+
+本机命令行仍可登录并导出会话；完整手工probe验证通过后恢复失效暂停，不完整probe返回非零。手工命令不能抢占正在进行的可视化授权。测试运行器覆盖 `PROMOTION_DATA_DIR`、清理授权绕过标记，并检查全部未忽略源码（含新增文件）未被修改。

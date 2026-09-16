@@ -58,3 +58,20 @@ class SettingsStore:
             value["accounts"][key] = settings
             private_json(self.path, value)
         return settings
+
+    def compare_update(self, key, expected, settings):
+        """Commit one account without overwriting concurrent operator changes."""
+        settings = validate_settings(settings) if settings is not None else None
+        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with self.path.with_suffix(".lock").open("a") as lock:
+            os.chmod(lock.name, 0o600)
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            value = self.read()
+            if value["accounts"].get(key) != expected:
+                raise ProviderError("config_changed", "账号配置已被修改，请取消后重新开始授权")
+            if settings is None:
+                value["accounts"].pop(key, None)
+            else:
+                value["accounts"][key] = settings
+            private_json(self.path, value)
+        return settings

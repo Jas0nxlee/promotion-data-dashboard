@@ -28,10 +28,12 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-必填：
+Docker登录与会话初始化请先按 [可视化授权说明](docs/DOCKER_AUTHORIZATION.md) 执行；配置现在使用目录挂载，旧 `PROMOTION_PROVIDER_FILE` 改为 `PROMOTION_PROVIDER_DIR`。
 
-- `PROMOTION_PROVIDER_CONFIG`：已核验的账号 provider 配置。
-- `PROMOTION_SESSION_DIR`：独立且不入库的登录会话目录。
+配置项：
+
+- `PROMOTION_PROVIDER_DIR`：宿主机账号配置目录，容器内的 `PROMOTION_PROVIDER_CONFIG` 由 Compose 设置。
+- `PROMOTION_SESSIONS_DIR`：宿主机独立会话目录，容器内的 `PROMOTION_SESSION_DIR` 由 Compose 设置。
 - 官方公众号数据源另需配置该账号授权令牌环境变量。
 - `SMTP_HOST`、`SMTP_FROM`：邮件服务器和发件地址。
 - SMTP 需要认证时，同时填写 `SMTP_USERNAME`、`SMTP_PASSWORD`。
@@ -74,13 +76,7 @@ docker compose ps
 docker compose logs -f scheduler
 ```
 
-若精简安装的 Docker CLI 没有 buildx，可先分别构建，再启动 Compose：
-
-```bash
-docker build -f Dockerfile.frontend -t promotion-dashboard-frontend .
-docker build -f Dockerfile.collector -t promotion-dashboard-scheduler .
-docker compose up -d --no-build
-```
+构建需要 Docker Buildx 和 Compose 2.17+，授权镜像通过命名构建上下文复用采集环境。
 
 访问：
 
@@ -117,3 +113,5 @@ docker compose exec scheduler python -m json.tool data/comment_alert.json
 ```
 
 不要同时运行多个数据采集实例。08:00 的数据任务和评论任务由同一个调度进程串行执行，避免互相覆盖快照。
+
+账号扫码、重新授权、超时与故障恢复操作见 [授权操作说明](docs/AUTHORIZATION_OPERATIONS.md)。

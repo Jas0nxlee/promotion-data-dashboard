@@ -3,9 +3,12 @@
 import argparse
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 from runtime import ROOT, SESSIONS, PROVIDER_CONFIG
 from providers.base import ProviderError
+from providers.authorization import AuthorizationStore
+from providers import browser as browser_module
 from providers.browser import session_key, account_lock
 from providers.registry import PLATFORMS, ProviderRegistry
 from providers.health import read_verification, record_verification, record_comment_verification
@@ -22,6 +25,60 @@ ENTRIES = {
     "wechat_service": "https://mp.weixin.qq.com/",
     "wechat_subscription": "https://mp.weixin.qq.com/",
 }
+
+OPERATOR_COMMANDS = {"login", "export-session", "bind-channels", "probe", "probe-comments"}
+
+
+@contextmanager
+def operator_authorization(key, command, public=False):
+    """CLI-only bypass; a manual command may not borrow a worker's active lease.
+
+    The browser and local login functions acquire their lock separately. Wrap
+    that lock for this single CLI invocation so a lease begun after the first
+    state read is checked again before any browser is opened. No global settings
+    or collector implementation are changed, and all bindings are restored.
+    """
+    global account_lock
+    if public or command not in OPERATOR_COMMANDS:
+        yield None
+        return
+    previous_flag = os.environ.get("PROMOTION_AUTHORIZATION_OPERATION")
+    worker = previous_flag == "1"
+    store = AuthorizationStore()
+    if store.read(key)["status"] == "authorizing" and not worker:
+        raise ProviderError("authorization_in_progress", "该账号已有正在进行的授权，请等待或取消原操作")
+    previous_browser_lock, previous_cli_lock = browser_module.account_lock, account_lock
+
+    @contextmanager
+    def checked_lock(lock_key):
+        with previous_browser_lock(lock_key):
+            if not worker and store.read(lock_key)["status"] == "authorizing":
+                raise ProviderError("authorization_in_progress", "该账号已开始另一项授权，停止本次手工操作")
+            yield
+
+    os.environ["PROMOTION_AUTHORIZATION_OPERATION"] = "1"
+    browser_module.account_lock = checked_lock
+    account_lock = checked_lock
+    try:
+        yield {"store": store, "worker": worker}
+    finally:
+        browser_module.account_lock = previous_browser_lock
+        account_lock = previous_cli_lock
+        if previous_flag is None:
+            os.environ.pop("PROMOTION_AUTHORIZATION_OPERATION", None)
+        else:
+            os.environ["PROMOTION_AUTHORIZATION_OPERATION"] = previous_flag
+
+
+def recover_operator_authorization(key, operator):
+    """Called only after a complete, valid native probe and diagnostic output."""
+    if operator is None or operator["worker"]:
+        return
+    with account_lock(key):
+        store = operator["store"]
+        if store.read(key)["status"] == "reauth_required":
+            state = store.begin(key)
+            store.complete(key, state["operation_id"])
 
 
 def accounts(include_public=False):
@@ -121,6 +178,11 @@ def main():
     public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
     if public and args.command not in {"probe", "reconcile"}:
         p.error("此平台使用公开采集，后台登录和会话配置尚未接入")
+    with operator_authorization(args.account, args.command, public) as operator:
+        return execute_command(args, p, account, public, operator)
+
+
+def execute_command(args, p, account, public, operator):
     if args.command == "login":
         login(account, args.channel)
         return
@@ -182,8 +244,9 @@ def main():
                 record_comment_verification(args.account, settings, comments, stats=stats)
             else:
                 collection = provider.collect(max_pages=args.max_pages)
-                record_verification(args.account, settings, collection)
+                evidence = record_verification(args.account, settings, collection)
                 result = asdict(collection)
+                result["verification"] = evidence
         except ProviderError as error:
             record_verification(args.account, settings, error=error)
             raise
@@ -199,13 +262,15 @@ def main():
         print(f"验证结果已写入 {dest.name}，未更新大屏与提醒状态")
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
-    if public and args.command == "probe":
+    if args.command == "probe":
         if result.get("error"):
             raise ProviderError(result["error"]["reason"], "公开图文验证失败，诊断已记录")
         evidence = result.get("verification", {})
         if not all(evidence.get(field) is True for field in
                    ("identity_verified", "contents_complete", "metrics_verified")):
-            raise ProviderError("verification_incomplete", "公开图文身份、分页或指标未通过验证，诊断已记录")
+            raise ProviderError("verification_incomplete", "账号身份、分页或指标未通过验证，诊断已记录")
+        if not public:
+            recover_operator_authorization(args.account, operator)
 
 
 if __name__ == "__main__":

@@ -5,6 +5,11 @@ from datetime import datetime, timedelta
 from runtime import DATA
 from .base import now, CN_TZ
 from .credentials import private_json
+from .authorization import AuthorizationStore, AUTHENTICATION_ERRORS
+
+
+def _has_authorization(settings):
+    return not str(settings.get("provider", "")).endswith("_public")
 
 
 def fingerprint(settings):
@@ -12,7 +17,49 @@ def fingerprint(settings):
     return hashlib.sha256(json.dumps(data, sort_keys=True).encode()).hexdigest()
 
 
+def _previous_or_error(key, error, directory):
+    path = (directory or DATA / "verification") / (hashlib.sha256(key.encode()).hexdigest()[:24] + ".json")
+    try:
+        previous = json.loads(path.read_text())
+    except (OSError, ValueError):
+        previous = {}
+    return previous or {"account_key": key, "success": False, "reason": getattr(error, "reason", "error")}
+
+
 def record_verification(key, settings, result=None, error=None, directory=None):
+    if error is not None and (getattr(error, "authorization_guard", False) is True
+                             or getattr(error, "reason", None) in {"authorization_in_progress", "session_busy"}):
+        return _previous_or_error(key, error, directory)
+    if (_has_authorization(settings) and error is not None
+            and getattr(error, "reason", None) in AUTHENTICATION_ERRORS):
+        # Serialize the generation check and evidence write with promotion.
+        # Successful verification is also called from inside promotion's lock,
+        # so only authentication-error handling acquires this extra lock.
+        from .browser import account_lock
+        from .base import ProviderError
+        try:
+            with account_lock(key):
+                authorization = AuthorizationStore()
+                if getattr(error, "authorization_error_recorded", False) is True:
+                    state = authorization.read(key)
+                    if (state.get("operation_id") != getattr(error, "authorization_operation_id", None)
+                            or state.get("status") == "authorized"):
+                        return _previous_or_error(key, error, directory)
+                else:
+                    state = authorization.require_reauthorization(key, error.reason, str(error))
+                    error.authorization_error_recorded = True
+                    error.authorization_operation_id = state.get("operation_id")
+                return _record_verification(key, settings, result, error, directory)
+        except ProviderError as exc:
+            if exc.reason not in {"session_busy", "authorization_in_progress"}:
+                raise
+            # An authorization/collector owns the lock; never let a late failure
+            # race its evidence commit or invalidate the session it is saving.
+            return _previous_or_error(key, error, directory)
+    return _record_verification(key, settings, result, error, directory)
+
+
+def _record_verification(key, settings, result=None, error=None, directory=None):
     folder = directory or DATA / "verification"
     path = folder / (hashlib.sha256(key.encode()).hexdigest()[:24] + ".json")
     try:
@@ -52,19 +99,25 @@ def record_verification(key, settings, result=None, error=None, directory=None):
 
 
 def read_verification(key, settings, directory=None):
+    authorization = AuthorizationStore().read(key) if _has_authorization(settings) else None
+    authorization_fields = ({"authorization_status": authorization["status"]}
+                            if authorization is not None else {})
+    authorization_pending = (authorization is not None
+                             and authorization["status"] in {"authorizing", "reauth_required"})
     folder = directory or DATA / "verification"
     path = folder / (hashlib.sha256(key.encode()).hexdigest()[:24] + ".json")
     try:
         value = json.loads(path.read_text())
     except (OSError, ValueError):
-        return {"status": "unverified", "ready": False}
+        return {"status": "unverified", "ready": False, **authorization_fields}
     current = value.get("config_fingerprint") == fingerprint(settings)
     try:
         fresh = datetime.fromisoformat(value["checked_at"]) > datetime.now(CN_TZ) - timedelta(hours=24)
     except (ValueError, KeyError, TypeError):
         fresh = False
     identity = value.get("identity_verified", False)
-    ready = bool(current and fresh and value.get("success") and identity and value.get("contents_complete") and value.get("metrics_verified"))
+    ready = bool(not authorization_pending and current and fresh and value.get("success")
+                 and identity and value.get("contents_complete") and value.get("metrics_verified"))
     details_required = key.split(":", 1)[0] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}
     no_replies_sample = (value.get("reply_verification_mode") == "no_replies_in_complete_sample"
                          and value.get("sample_comments_complete") is True
@@ -75,7 +128,7 @@ def read_verification(key, settings, directory=None):
     complete = ready and (not details_required or value.get("comments_verified")
                          and (value.get("replies_verified") or no_replies_sample))
     return {**value, "status": "verified" if complete else "attention", "ready": bool(complete), "content_ready": ready,
-            "evidence_current": current and fresh}
+            "evidence_current": current and fresh, **authorization_fields}
 
 
 def record_comment_verification(key, settings, comments, directory=None, *, stats=None):

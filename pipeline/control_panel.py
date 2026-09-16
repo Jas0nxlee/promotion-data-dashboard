@@ -19,6 +19,7 @@ from providers.browser import session_key
 from providers.settings import SettingsStore
 from providers.health import read_verification
 from providers.base import ProviderError
+from providers.authorization import AuthorizationStore
 from providers.public_articles import PUBLIC_ARTICLE_PLATFORMS, public_article_settings
 
 
@@ -59,17 +60,33 @@ class Panel:
         self.jobs = {}
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.lock = threading.Lock()
+        self.authorization = AuthorizationStore()
+        self.login_manager = None
+        if os.environ.get("PROMOTION_LOGIN_MODE") == "remote":
+            from login_manager import LoginManager
+            self.login_manager = LoginManager(self.store, accounts(include_public=True), ENTRIES, onboarding_settings)
 
     def summary(self):
         config = self.store.read()["accounts"]
         result = []
+        active = self.login_manager.status() if self.login_manager else None
         for key, account in accounts(include_public=True).items():
             public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
             settings = public_article_settings(account) if public else config.get(key, {})
+            try:
+                health = read_verification(key, settings)
+                state = self.authorization.read(key) if not public else {"status": "not_required"}
+                if state["status"] == "untracked":
+                    state = {"status": "authorized" if health.get("ready") else "unverified" if settings else "unconfigured"}
+            except ProviderError:
+                health = {"ready": False, "status": "attention"}
+                state = {"status": "reauth_required", "message": "授权状态无法读取，请检查状态文件"}
             result.append({"key": key, "name": account["account_name"], "platform": account["platform"],
                            "configured": bool(settings), "collection_mode": "public" if public else "authorized",
-                           "can_login": not public, "can_configure": not public,
-                           "health": read_verification(key, settings),
+                           "can_login": not public and settings.get("provider") != "wechat_official", "can_configure": not public,
+                           "authorization": {name: state.get(name) for name in ("status", "message", "expires_at", "updated_at")},
+                           "login_session": active if active and active["account"] == key else None,
+                           "health": health,
                            "job": self.jobs.get(key, {})})
         return result
 
@@ -77,6 +94,8 @@ class Panel:
         account = accounts(include_public=True)[key]
         if account["platform"] in PUBLIC_ARTICLE_PLATFORMS:
             raise ProviderError("unsupported_login", "此平台使用公开采集，后台登录尚未接入")
+        if self.login_manager:
+            return {"status": "login_opened", "login_session": self.login_manager.start(key)}
         profile = SESSIONS / session_key(key)
         profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         current = self.store.read()["accounts"].get(key, {})
@@ -111,6 +130,8 @@ class Panel:
     def probe(self, key):
         account = accounts(include_public=True)[key]
         public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
+        if not public and self.authorization.read(key)["status"] == "authorizing":
+            raise ProviderError("authorization_in_progress", "该账号正在授权，请使用验证并保存按钮")
         with self.lock:
             if self.jobs.get(key, {}).get("running"):
                 raise ProviderError("busy", "该账号正在验证")
@@ -151,6 +172,11 @@ class Panel:
         self.executor.submit(execute)
         return {"status": "running"}
 
+    def close(self):
+        if self.login_manager:
+            self.login_manager.close()
+        self.executor.shutdown(wait=False, cancel_futures=True)
+
 
 def handler(panel):
     class Handler(BaseHTTPRequestHandler):
@@ -167,7 +193,18 @@ def handler(panel):
             self.wfile.write(data)
 
         def host_allowed(self):
-            return self.headers.get("Host") in {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+            hosts = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
+            external = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
+            if external:
+                hosts.add(urlparse(external).netloc)
+            return self.headers.get("Host") in hosts
+
+        def origin_allowed(self):
+            origins = {f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"}
+            external = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
+            if external:
+                origins.add(external)
+            return self.headers.get("Origin", "") in origins
 
         def do_GET(self):
             if not self.host_allowed():
@@ -184,13 +221,13 @@ def handler(panel):
                 self.wfile.write(data)
             elif self.path == "/api/accounts":
                 self.respond(panel.summary())
+            elif self.path == "/api/login-session":
+                self.respond(panel.login_manager.status() if panel.login_manager else None)
             else:
                 self.respond({"error": "not found"}, 404)
 
         def do_POST(self):
-            origin = self.headers.get("Origin", "")
-            if not self.host_allowed() or self.headers.get("X-CSRF-Token") != panel.token or origin not in {
-                    f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"}:
+            if not self.host_allowed() or self.headers.get("X-CSRF-Token") != panel.token or not self.origin_allowed():
                 return self.respond({"error": "页面会话已更新或请求来源不符，请刷新本页面后重试"}, 403)
             try:
                 size = int(self.headers.get("Content-Length", "0"))
@@ -206,11 +243,19 @@ def handler(panel):
                     raise ProviderError("unsupported_configuration", "此平台使用公开采集，后台配置尚未接入")
                 if self.path == "/api/login":
                     result = panel.login(key)
+                elif self.path in {"/api/authorization/complete", "/api/authorization/cancel"}:
+                    if not panel.login_manager:
+                        raise ProviderError("unsupported", "本机模式请在独立窗口登录后使用只读验证")
+                    operation = payload.get("operation_id")
+                    action = panel.login_manager.complete if self.path.endswith("/complete") else panel.login_manager.cancel
+                    result = action(key, operation)
                 elif self.path == "/api/probe":
                     result = panel.probe(key)
                 elif self.path == "/api/config/read":
                     result = panel.store.read()["accounts"].get(key, {})
                 elif self.path == "/api/config/save":
+                    if panel.authorization.read(key)["status"] == "authorizing":
+                        raise ProviderError("authorization_in_progress", "正在授权，请先完成或取消再修改配置")
                     panel.store.update(key, payload["settings"])
                     result = {"status": "saved"}
                 else:
@@ -229,13 +274,19 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=18761)
     args = p.parse_args()
+    origin = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
+    if origin:
+        parsed = urlparse(origin)
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.path
+                or parsed.params or parsed.query or parsed.fragment or parsed.username or parsed.password):
+            p.error("PROMOTION_PANEL_ORIGIN 必须是准确的 http(s)://主机[:端口]，不能含路径或凭证")
     panel = Panel()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(panel))
     print(f"账号接入面板：http://127.0.0.1:{server.server_port} （仅本机可访问）", flush=True)
     try:
         server.serve_forever()
     finally:
-        panel.executor.shutdown(wait=False, cancel_futures=True)
+        panel.close()
         server.server_close()
 
 
