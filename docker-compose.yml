@@ -31,7 +31,7 @@ services:
       DATA_COLLECTION_HOUR: "8"
       SCHEDULER_POLL_SECONDS: "20"
       VIDEO_FETCH_ARGS: "${VIDEO_FETCH_ARGS:---no-enrich-bili}"
-      ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:---wechat-pages 200}"
+      ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:---wechat-pages 200 --max-pages 200 --toutiao-pages 200}"
       COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 0 --max-age-days 0 --max-pages 200}"
       DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-800}"
       PROMOTION_PROVIDER_CONFIG: /run/promotion/providers.json

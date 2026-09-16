@@ -9,23 +9,26 @@ from providers.base import ProviderError
 from providers.browser import session_key, account_lock
 from providers.registry import PLATFORMS, ProviderRegistry
 from providers.health import read_verification, record_verification, record_comment_verification
+from providers.public_articles import (PUBLIC_ARTICLE_PLATFORMS, public_article_settings,
+                                      record_public_article_verification)
 
 ENTRIES = {
     "bilibili": "https://member.bilibili.com/platform/home",
     "douyin": "https://creator.douyin.com/",
     "xiaohongshu": "https://creator.xiaohongshu.com/",
     "zhihu": "https://www.zhihu.com/creator",
+    "baijiahao": "https://baijiahao.baidu.com/",
     "wechat_channels": "https://channels.weixin.qq.com/",
     "wechat_service": "https://mp.weixin.qq.com/",
     "wechat_subscription": "https://mp.weixin.qq.com/",
 }
 
 
-def accounts():
+def accounts(include_public=False):
     result = {}
     for name in ("accounts.json", "article_accounts.json"):
         for a in json.loads((ROOT / "config" / name).read_text())["accounts"]:
-            if a["platform"] in PLATFORMS:
+            if include_public or a["platform"] in PLATFORMS:
                 result[f"{a['platform']}:{a['account_name']}"] = a
     return result
 
@@ -33,13 +36,14 @@ def accounts():
 def status():
     registry = ProviderRegistry()
     result = []
-    for key, a in accounts().items():
-        config = registry.config.get("accounts", {}).get(key, {})
+    for key, a in accounts(include_public=True).items():
+        public = a["platform"] in PUBLIC_ARTICLE_PLATFORMS
+        config = public_article_settings(a) if public else registry.config.get("accounts", {}).get(key, {})
         required = ["profile", "contents"]
         if a["platform"] in {"bilibili", "douyin", "xiaohongshu", "wechat_channels"}:
             required.extend(["comments", "replies"])
-        missing = [] if config.get("provider") in {"bilibili_creator", "douyin_creator", "wechat_channels_creator", "xiaohongshu_creator", "zhihu_creator", "wechat_official", "wechat_browser"} else [x for x in required if x not in config.get("workflows", {})]
-        result.append({"account": key, "configured": bool(config),
+        missing = [] if public or config.get("provider") in {"bilibili_creator", "douyin_creator", "wechat_channels_creator", "xiaohongshu_creator", "zhihu_creator", "wechat_official", "wechat_browser", "baijiahao_creator"} else [x for x in required if x not in config.get("workflows", {})]
+        result.append({"account": key, "configured": bool(config), "collection_mode": "public" if public else "authorized",
                        "missing_workflows": missing, "session_saved": (SESSIONS / session_key(key)).is_dir(),
                        "comment_identity_verified": config.get("comment_identity_compatible") is True,
                        "live_verification": read_verification(key, config)})
@@ -63,6 +67,39 @@ def login(account, channel):
         os.chmod(folder, 0o700)
 
 
+def probe_public_article(account, max_pages):
+    """Run one raw public collector; never load/merge/write dashboard snapshots."""
+    import fetch_article_data as articles
+    platform = account["platform"]
+    if platform not in PUBLIC_ARTICLE_PLATFORMS:
+        raise ProviderError("unsupported_platform", "此命令仅支持公开图文平台")
+    client = None
+    collector = None
+    try:
+        if platform == "toutiao":
+            collector = articles.ToutiaoCollector(max_pages=max_pages)
+        else:
+            client = articles.HttpClient()
+            classes = {"csdn": articles.CsdnCollector, "elecfans": articles.ElecfansCollector,
+                       "sohu": articles.SohuCollector}
+            collector = classes[platform](client, max_pages=max_pages)
+        entry, records = collector.collect(account)
+        evidence = record_public_article_verification(account, entry, records)
+        return {"profile": entry, "records": records, "complete": entry.get("status") == "ok",
+                "source": public_article_settings(account)["provider"], "verification": evidence}
+    except Exception as exc:
+        error = exc if isinstance(exc, ProviderError) else ProviderError("collection_failed", str(exc))
+        evidence = record_public_article_verification(account, error=error)
+        return {"profile": {}, "records": [], "complete": False,
+                "source": public_article_settings(account)["provider"], "verification": evidence,
+                "error": {"reason": error.reason, "message": str(error)}}
+    finally:
+        if platform == "toutiao" and collector is not None:
+            collector.close()
+        if client is not None:
+            client.session.close()
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("command", choices=("status", "login", "probe", "probe-bilibili", "probe-comments", "reconcile", "export-session", "bind-channels"))
@@ -78,9 +115,12 @@ def main():
     if args.command == "status":
         status()
         return
-    account = accounts().get(args.account)
+    account = accounts(include_public=True).get(args.account)
     if not account:
         p.error("请从 status 输出中选择已配置的 --account")
+    public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
+    if public and args.command not in {"probe", "reconcile"}:
+        p.error("此平台使用公开采集，后台登录和会话配置尚未接入")
     if args.command == "login":
         login(account, args.channel)
         return
@@ -126,6 +166,8 @@ def main():
         # Validate public content ownership against the configured account.
         if result["source_author_id"] != str(account["platform_uid"]):
             raise ProviderError("identity_mismatch", "视频原作者与选定账号不一致")
+    elif public:
+        result = probe_public_article(account, args.max_pages)
     else:
         from dataclasses import asdict
         registry = ProviderRegistry()
@@ -157,6 +199,13 @@ def main():
         print(f"验证结果已写入 {dest.name}，未更新大屏与提醒状态")
     else:
         print(json.dumps(result, ensure_ascii=False, indent=2))
+    if public and args.command == "probe":
+        if result.get("error"):
+            raise ProviderError(result["error"]["reason"], "公开图文验证失败，诊断已记录")
+        evidence = result.get("verification", {})
+        if not all(evidence.get(field) is True for field in
+                   ("identity_verified", "contents_complete", "metrics_verified")):
+            raise ProviderError("verification_incomplete", "公开图文身份、分页或指标未通过验证，诊断已记录")
 
 
 if __name__ == "__main__":

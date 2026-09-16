@@ -27,7 +27,8 @@ def record_verification(key, settings, result=None, error=None, directory=None):
              "content_count": len(result.records) if result else 0,
              "comments_verified": False, "replies_verified": False}
     platform = key.split(":", 1)[0]
-    defaults = (["comment"] if settings.get("provider") == "wechat_browser" else
+    defaults = (["read", "like", "comment"] if settings.get("provider") == "baijiahao_creator" else
+                ["comment"] if settings.get("provider") == "wechat_browser" else
                 ["like", "comment"] if platform in {"bilibili", "douyin", "xiaohongshu", "zhihu"} else [])
     required = settings.get("required_metrics", defaults)
     required_extra = settings.get("required_extra_metrics", ["read_users", "like_users", "share_users"]

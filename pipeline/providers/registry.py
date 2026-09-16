@@ -12,7 +12,7 @@ from .zhihu import ZhihuProvider
 from .wechat_browser import WeChatBrowserProvider
 from api_budget import ApiBudget
 
-PLATFORMS = {"bilibili", "douyin", "wechat_channels", "xiaohongshu", "zhihu", "wechat_service", "wechat_subscription"}
+PLATFORMS = {"bilibili", "douyin", "wechat_channels", "xiaohongshu", "zhihu", "wechat_service", "wechat_subscription", "baijiahao"}
 
 
 class ProviderRegistry:
@@ -58,6 +58,10 @@ class ProviderRegistry:
             if not settings:
                 raise ProviderError("setup_required", "账号尚未绑定已核验的后台采集配置，请运行 provider_setup status")
             kind = settings.get("provider", "browser")
+            if kind == "baijiahao_creator" and platform == "baijiahao":
+                from .baijiahao_creator import BaijiahaoCreatorProvider
+                self.providers[key] = BaijiahaoCreatorProvider(account, settings)
+                return self.providers[key]
             if kind == "wechat_browser" and platform in {"wechat_service", "wechat_subscription"}:
                 self.providers[key] = WeChatBrowserProvider(account, settings)
                 return self.providers[key]

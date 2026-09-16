@@ -19,12 +19,14 @@ from providers.browser import session_key
 from providers.settings import SettingsStore
 from providers.health import read_verification
 from providers.base import ProviderError
+from providers.public_articles import PUBLIC_ARTICLE_PLATFORMS, public_article_settings
 
 
 NATIVE_PROVIDERS = {
     "bilibili": "bilibili_creator", "douyin": "douyin_creator",
     "wechat_channels": "wechat_channels_creator", "xiaohongshu": "xiaohongshu_creator",
     "zhihu": "zhihu_creator",
+    "baijiahao": "baijiahao_creator",
     "wechat_service": "wechat_browser", "wechat_subscription": "wechat_browser",
 }
 # Upgrade only the old login placeholder shape. Unknown fields, even empty
@@ -61,15 +63,20 @@ class Panel:
     def summary(self):
         config = self.store.read()["accounts"]
         result = []
-        for key, account in accounts().items():
-            settings = config.get(key, {})
+        for key, account in accounts(include_public=True).items():
+            public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
+            settings = public_article_settings(account) if public else config.get(key, {})
             result.append({"key": key, "name": account["account_name"], "platform": account["platform"],
-                           "configured": bool(settings), "health": read_verification(key, settings),
+                           "configured": bool(settings), "collection_mode": "public" if public else "authorized",
+                           "can_login": not public, "can_configure": not public,
+                           "health": read_verification(key, settings),
                            "job": self.jobs.get(key, {})})
         return result
 
     def login(self, key):
-        account = accounts()[key]
+        account = accounts(include_public=True)[key]
+        if account["platform"] in PUBLIC_ARTICLE_PLATFORMS:
+            raise ProviderError("unsupported_login", "此平台使用公开采集，后台登录尚未接入")
         profile = SESSIONS / session_key(key)
         profile.mkdir(parents=True, exist_ok=True, mode=0o700)
         current = self.store.read()["accounts"].get(key, {})
@@ -102,6 +109,8 @@ class Panel:
         return {"status": "login_opened", "message": "请在独立浏览器扫码；尚未认定登录或采集成功"}
 
     def probe(self, key):
+        account = accounts(include_public=True)[key]
+        public = account["platform"] in PUBLIC_ARTICLE_PLATFORMS
         with self.lock:
             if self.jobs.get(key, {}).get("running"):
                 raise ProviderError("busy", "该账号正在验证")
@@ -114,17 +123,17 @@ class Panel:
                    "PROMOTION_SESSION_DIR": str(SESSIONS), "PROMOTION_PROVIDER_CONFIG": str(PROVIDER_CONFIG)}
             try:
                 settings = self.store.read()["accounts"].get(key, {})
-                upgraded = onboarding_settings(accounts()[key], settings)
+                upgraded = settings if public else onboarding_settings(account, settings)
                 if upgraded != settings:
                     settings = self.store.update(key, upgraded)
-                if settings.get("provider") == "wechat_channels_creator" and not settings.get("expected_finder_id"):
+                if not public and settings.get("provider") == "wechat_channels_creator" and not settings.get("expected_finder_id"):
                     binding = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "bind-channels", "--account", key],
                                              env=env, capture_output=True, text=True, timeout=120)
                     if binding.returncode:
                         self.jobs[key] = {"running": False, "success": False, "message": "身份绑定未完成，请确认已登录且视频号短号与配置一致"}
                         return
                     settings = self.store.read()["accounts"].get(key, {})
-                if settings.get("session_mode") == "portable" and settings.get("cdp_url"):
+                if not public and settings.get("session_mode") == "portable" and settings.get("cdp_url"):
                     exported = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "export-session", "--account", key],
                                               env=env, capture_output=True, text=True, timeout=120)
                     if exported.returncode:
@@ -133,10 +142,12 @@ class Panel:
                 result = subprocess.run([sys.executable, str(ROOT / "pipeline/provider_setup.py"), "probe", "--account", key,
                                          "--max-pages", "200", "--output", str(destination)], env=env,
                                         capture_output=True, text=True, timeout=1800)
-                message = "验证结果已保存；以覆盖检查为准" if result.returncode == 0 else "未完成，请检查登录状态与采集配置"
+                message = "验证结果已保存；以覆盖检查为准" if result.returncode == 0 else ("公开采集未完成，请检查平台响应与覆盖状态" if public else "未完成，请检查登录状态与采集配置")
                 self.jobs[key] = {"running": False, "success": result.returncode == 0, "message": message}
             except subprocess.TimeoutExpired:
                 self.jobs[key] = {"running": False, "success": False, "message": "验证超时，未更新正式数据"}
+            except Exception:
+                self.jobs[key] = {"running": False, "success": False, "message": "验证未完成，请检查本地环境"}
         self.executor.submit(execute)
         return {"status": "running"}
 
@@ -187,8 +198,12 @@ def handler(panel):
                     return self.respond({"error": "invalid body size"}, 413)
                 payload = json.loads(self.rfile.read(size))
                 key = payload["account"]
-                if key not in accounts():
+                all_accounts = accounts(include_public=True)
+                if key not in all_accounts:
                     raise ProviderError("unknown_account", "账号不在本项目清单内")
+                if (all_accounts[key]["platform"] in PUBLIC_ARTICLE_PLATFORMS
+                        and self.path in {"/api/config/read", "/api/config/save"}):
+                    raise ProviderError("unsupported_configuration", "此平台使用公开采集，后台配置尚未接入")
                 if self.path == "/api/login":
                     result = panel.login(key)
                 elif self.path == "/api/probe":

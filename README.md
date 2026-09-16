@@ -2,7 +2,7 @@
 
 面向多平台推广账号的数据采集、质量检查、可视化和评论提醒项目。
 
-当前分支已实现六个平台的直采流程并完成代表账号真实验证，累计验证9／14个目标账号，包括公众号国科安芯。其余5个账号按约定留到实际运行时授权；尚未进行生产部署和七天观察。开发测试请使用 [本地隔离开发说明](docs/LOCAL_DEVELOPMENT.md)，不要直接运行下方生产 Compose。
+当前分支正在迁移和补齐平台直采。原先9／14账号的结果仅覆盖TikHub替换范围；整个项目实际包含24账号，其中图文17账号、8类平台。公开图文采集器的验收现已单独补齐，当前缺口见 [图文验收清单](docs/ARTICLE_PLATFORM_STATUS.md)。尚未进行生产部署和七天观察。开发测试请使用 [本地隔离开发说明](docs/LOCAL_DEVELOPMENT.md)，不要直接运行下方生产 Compose。
 
 项目包含两套静态大屏：
 
@@ -180,7 +180,7 @@ B站、抖音、小红书和视频号执行以下流程：
 
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
-ARTICLE_FETCH_ARGS=--wechat-pages 200
+ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
 COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 0 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
 ```
@@ -260,7 +260,9 @@ python3 pipeline/fetch_article_data.py --mock
 | 平台 | 主要数据源 | 重要边界 |
 | --- | --- | --- |
 | B站、抖音、视频号 | 授权后台 provider；B站公开详情补充 | 后台流程需登录校准；未接通时保留旧快照 |
-| CSDN、电子发烧友、百家号、搜狐 | 公开主页 | 页面变化、访问限制或历史范围可能导致部分覆盖 |
+| CSDN、电子发烧友 | 公开主页与列表接口 | 核验精确作者、总数和完整分页，缺失指标保持未知 |
+| 搜狐 | 浏览器公开作者页及正常滚动分页 | 核验媒体ID、逐篇作者和总数；仅阅读与评论可得 |
+| 百家号 | 授权创作后台 provider | 独立登录、稳定app_id与逐篇图文指标核验；不再使用无互动指标的公开列表作为默认来源 |
 | 知乎、小红书、微信公众号 | 授权后台或公众号官方 API provider | 需账号权限与字段映射；当前仍有接入待办 |
 | 今日头条 | Playwright 访问公开作者页 | 需要 Chromium；访问校验或页面变化可能导致失败 |
 | 其他后台数据 | `data/article_manual_input.json` | 由人工导入内容决定覆盖范围 |

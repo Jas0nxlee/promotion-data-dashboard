@@ -7,11 +7,16 @@ from runtime import DATA
 from provider_setup import accounts
 from providers.settings import SettingsStore
 from providers.health import read_verification
+from providers.public_articles import PUBLIC_ARTICLE_PLATFORMS, public_article_settings
 
 
 def report(min_days=7):
     settings = SettingsStore().read()["accounts"]
-    rows = [{"account": key, **read_verification(key, settings.get(key, {}))} for key in accounts()]
+    catalog = accounts(include_public=True)
+    rows = [{"account": key, "scope": "public_article" if account["platform"] in PUBLIC_ARTICLE_PLATFORMS else "provider",
+             **read_verification(key, public_article_settings(account)
+                                 if account["platform"] in PUBLIC_ARTICLE_PLATFORMS else settings.get(key, {}))}
+            for key, account in catalog.items()]
     history = []
     path = DATA / "run_history.jsonl"
     if path.exists():
@@ -35,6 +40,7 @@ def report(min_days=7):
                               "days_with_runs": observed_days, "success_rate": round(rate, 4), "passed": passed}
     account_ready = all(x["ready"] for x in rows)
     return {"accounts": rows, "ready_accounts": sum(x["ready"] for x in rows), "total_accounts": len(rows),
+            "scope": "all_configured_video_and_article_accounts",
             "accounts_ready": account_ready, "observations": observations,
             "release_ready": account_ready and all(x["passed"] for x in observations.values())}
 

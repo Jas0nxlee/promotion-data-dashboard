@@ -1,6 +1,6 @@
 # Docker 部署说明
 
-当前迁移分支已完成六个平台代表账号的真实后台验证，累计9／14账号通过；剩余账号运行时授权、目标环境会话验证和七天观察尚未完成，不直接替换生产服务。工作树测试使用 [独立开发说明](docs/LOCAL_DEVELOPMENT.md) 和单独的 `docker-compose.local.yml`。
+当前迁移分支尚未完成整个项目验收。健康检查现覆盖全部24个视频与图文账号，原9／14只代表TikHub替换范围。图文平台、剩余账号及目标环境的状态见 [图文验收清单](docs/ARTICLE_PLATFORM_STATUS.md)。工作树测试使用 [独立开发说明](docs/LOCAL_DEVELOPMENT.md) 和单独的 `docker-compose.local.yml`。
 
 ## 架构
 
@@ -57,7 +57,7 @@ COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"
 
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
-ARTICLE_FETCH_ARGS=--wechat-pages 200
+ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
 COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 0 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
 ```

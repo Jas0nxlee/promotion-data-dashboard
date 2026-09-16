@@ -19,6 +19,7 @@ from api_budget import ApiBudget, ApiBudgetExceeded
 HOSTS = {
     "bilibili": ("bilibili.com",), "douyin": ("douyin.com",),
     "xiaohongshu": ("xiaohongshu.com",), "zhihu": ("zhihu.com",),
+    "baijiahao": ("baidu.com",),
     "wechat_channels": ("channels.weixin.qq.com",),
     "wechat_service": ("mp.weixin.qq.com",),
     "wechat_subscription": ("mp.weixin.qq.com",),

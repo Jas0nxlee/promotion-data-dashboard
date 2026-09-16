@@ -180,3 +180,21 @@ PROMOTION_RUNTIME_DIR="$PWD/.runtime/local" PROMOTION_TEST_MODE=1 \
 接入面板在明确点击登录或验证时，会把已支持平台的纯浏览器占位配置升级到对应内置适配器，保留会话与身份绑定。存在自定义流程、字段映射、导出配置或内容/评论别名时，即使配置为空，也不会自动替换。公众号服务号与订阅号的纯占位配置也会升级为 `wechat_browser`；显式选择官方 API 的配置保持原样。
 
 公众号历史对账依据见 [历史数据基线](WECHAT_HISTORY_BASELINE.md)。
+
+
+## 全部图文平台纳入验收
+
+原接入范围14账号只是TikHub替换子集。`healthcheck.py`、账号接入面板和 `provider_setup.py status` 现在展示完整24账号（视频7、图文17），不会遗漏原有公开图文账号。只读验证先检查原始采集结果中的身份、完整性和阅读/评论覆盖率，再写独立验证证据；不会用缓存补回值通过健康检查。
+
+百家号现使用 `baijiahao_creator` 授权后台，独立登录并按app_id核验；其余四类公开采集账号的登录/配置入口明确禁用；已实现的公开流程可从面板点击“只读验证”，或使用：
+
+```bash
+PROMOTION_RUNTIME_DIR="$PWD/.runtime/local" PROMOTION_TEST_MODE=1 \
+  .venv/bin/python pipeline/provider_setup.py probe \
+  --account 'csdn:国科安芯' --max-pages 200 \
+  --output .runtime/probes/csdn-guoke.json
+```
+
+只读验证不合并或覆盖大屏快照，也不触发邮件。来源、指标与尚未验证的账号清单见 [图文验收清单](ARTICLE_PLATFORM_STATUS.md)。
+
+图文常规采集、公众号与头条的默认分页上限现均为200，避免百家号超过原80页或头条超过原20页后每天只得到部分目录。超过200页仍明确失败或部分采集，不伪称全量；已有 `.env` 覆盖值需要部署时同步检查。
