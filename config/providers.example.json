@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "note": "B站原生后台适配已用望获OS账号核验；仍需要该账号自己的登录会话。其余平台按本地接入说明配置。",
+  "accounts": {
+    "bilibili:望获OS": {
+      "provider": "bilibili_creator",
+      "expected_uid": "3537118127197066",
+      "channel": "chrome",
+      "comment_identity_compatible": true
+    }
+  }
+}

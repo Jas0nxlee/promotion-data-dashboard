@@ -32,6 +32,9 @@ def item(platform="douyin"):
 
 
 class CommentPaginationTests(unittest.TestCase):
+    def test_default_comment_window_is_three_months(self):
+        self.assertEqual(90, cm.DEFAULT_MAX_AGE_DAYS)
+
     @staticmethod
     def args(**overrides):
         values = {
@@ -209,10 +212,11 @@ class CommentPaginationTests(unittest.TestCase):
             {"old", "unknown"}, set(updated["seen_comments"]["douyin:content-1"]))
 
     def test_hourly_discovery_adds_latest_bilibili_content_only_once(self):
-        client = FakeClient([{"data": {
-            "item": [{"bvid": "BV-new", "title": "new", "created": 100,
-                      "stat": {"reply": 3}}]
-        }}])
+        from providers.base import Collection
+        client = mock.Mock()
+        client.discover.return_value = Collection({}, [
+            {"video_id": "BV-new", "title": "new", "published_at": "2026-09-01T00:00:00+08:00",
+             "stats": {"comment": 3}}])
         video_config = {"accounts": [{
             "platform": "bilibili", "account_name": "账号",
             "business_line": "业务", "platform_uid": "123",

@@ -1,21 +1,23 @@
 # Docker 部署说明
 
+当前迁移分支尚未完成整个项目验收。健康检查现覆盖全部24个视频与图文账号，原9／14只代表TikHub替换范围。图文平台、剩余账号及目标环境的状态见 [图文验收清单](docs/ARTICLE_PLATFORM_STATUS.md)。工作树测试使用 [独立开发说明](docs/LOCAL_DEVELOPMENT.md) 和单独的 `docker-compose.local.yml`。
+
 ## 架构
 
 - `frontend`：BusyBox `httpd`，只提供静态页面，默认监听宿主机 `8080`。
 - `scheduler`：Python + Playwright/Chromium，负责数据采集、评论检查和 SMTP 邮件发送。
-- `data/`、`web/data/`、`web/articles/data/`、`web/comments/data/` 使用宿主机目录持久化。
+- `data/`、`web/data/`、`web/articles/data/` 使用宿主机目录持久化；升级镜像不会丢失快照、评论游标和待发邮件。
 
 调度时间固定按北京时间执行：
 
 - 每天 `08:00`：依次采集视频数据、图文数据、校验快照，然后执行当小时评论检查和邮件发送。
 - 每小时整点：评论检查，随后发送待发邮件；SMTP 临时失败时队列保留到下一小时重试。
 
-评论正文接口覆盖抖音、B站、小红书和视频号。作品按发布年龄分层轮询：0～7 天每 2 小时、8～30 天每 6 小时、31～90 天每 24 小时。只有一级评论的 `reply_count` 增长时才查询回复详情，并只记录稳定用户 ID 匹配的官方回复。`timeline_started_at` 首次落盘后不再变化，时间线不回填上线之前的互动。
+评论正文接口当前覆盖抖音、B站、小红书和视频号：评论任务默认每2小时读取各账号最新一页作品，发现每日快照后新发布的内容。默认保留全部历史作品，按内容年龄分层轮询：7天内每2小时、30天内每6小时、更早内容每24小时；完整分页一级评论，并按跟踪评论的回复增长和补查条件读取二级回复。容器首次启动会立即执行评论任务并建立持久化 `monitor_started_at` 基线，不发送此前的历史评论；容器重启继续使用原基线。基线完成后发现的新内容，只提醒有可靠时间戳且产生于启动基线之后的评论；无可靠时间戳的存量先纳入基线，后续新评论 ID 正常提醒。游标异常、重复或超过 `--max-pages` 时，该内容本轮失败且不推进状态。CSDN、电子发烧友、百家号、知乎、公众号、今日头条和搜狐只对比大屏快照中的评论数；由于大屏每天 08:00 刷新，这些平台的评论变化只能在每日刷新后发现。
 
 邮件采用至少一次投递：提醒先原子写入持久化队列，再推进评论状态；SMTP 成功后才逐封移出。进程在 SMTP 已接收邮件、但队列尚未来得及落盘的极端窗口中可能导致重复邮件，但不会主动删除未确认成功的提醒。
 
-视频、图文、新内容发现、一级评论、官方回复和失败重试共享 `TIKHUB_DAILY_CALL_LIMIT`。请求在发出前原子记账，达到上限后立即阻断。
+全量范围通过分层轮询、请求预算和分页上限控制访问量。上线前仍需实测目标环境的会话稳定性、请求频率和扫描耗时；超过预算或分页上限时明确报告未完成，不作为空数据处理。
 
 ## 配置
 
@@ -26,10 +28,13 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-必填：
+Docker登录与会话初始化请先按 [可视化授权说明](docs/DOCKER_AUTHORIZATION.md) 执行；配置现在使用目录挂载，旧 `PROMOTION_PROVIDER_FILE` 改为 `PROMOTION_PROVIDER_DIR`。
 
-- `TIKHUB_API_KEY`：视频、知乎、公众号、小红书和正文评论接口使用。
-- `TIKHUB_BASE_URL`：TikHub API 根地址；中国大陆服务器可按服务商当前说明改用大陆域名。
+配置项：
+
+- `PROMOTION_PROVIDER_DIR`：宿主机账号配置目录，容器内的 `PROMOTION_PROVIDER_CONFIG` 由 Compose 设置。
+- `PROMOTION_SESSIONS_DIR`：宿主机独立会话目录，容器内的 `PROMOTION_SESSION_DIR` 由 Compose 设置。
+- 官方公众号数据源另需配置该账号授权令牌环境变量。
 - `SMTP_HOST`、`SMTP_FROM`：邮件服务器和发件地址。
 - SMTP 需要认证时，同时填写 `SMTP_USERNAME`、`SMTP_PASSWORD`。
 - 587/STARTTLS 使用 `SMTP_SSL=false`、`SMTP_STARTTLS=true`；465/SSL 使用 `SMTP_SSL=true`、`SMTP_STARTTLS=false`。
@@ -50,15 +55,16 @@ COMMENT_RECIPIENT_SOHU=receiver@example.com
 COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"},"douyin":"b@example.com"}
 ```
 
-节流后的默认参数：
+迁移分支默认参数：
 
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
-ARTICLE_FETCH_ARGS=--wechat-pages 5
-COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20
+ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
+COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 90 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
-TIKHUB_DAILY_CALL_LIMIT=800
 ```
+
+已有 `.env` 会覆盖这些默认值，升级时必须检查旧的条数/时间范围和 `--no-replies` 参数。公众号浏览器每页10组发表记录，200页是安全上限；不把未完成分页当成全量。镜像设置 `PROMOTION_BROWSER_CHANNEL=chromium` 以使用镜像内浏览器，本机 Chrome 会话需先导出为独立账号的 portable 文件，目标环境仍须只读验证。
 
 ## 启动与检查
 
@@ -70,19 +76,12 @@ docker compose ps
 docker compose logs -f scheduler
 ```
 
-若精简安装的 Docker CLI 没有 buildx，可先分别构建，再启动 Compose：
-
-```bash
-docker build -f Dockerfile.frontend -t promotion-dashboard-frontend .
-docker build -f Dockerfile.collector -t promotion-dashboard-scheduler .
-docker compose up -d --no-build
-```
+构建需要 Docker Buildx 和 Compose 2.17+，授权镜像通过命名构建上下文复用采集环境。
 
 访问：
 
 - 视频大屏：`http://服务器IP:8080/`
 - 图文大屏：`http://服务器IP:8080/articles/`
-- 评论时间线：`http://服务器IP:8080/comments/`
 
 如需修改外部端口，在 `.env` 设置 `DASHBOARD_PORT=端口号`。
 
@@ -114,3 +113,5 @@ docker compose exec scheduler python -m json.tool data/comment_alert.json
 ```
 
 不要同时运行多个数据采集实例。08:00 的数据任务和评论任务由同一个调度进程串行执行，避免互相覆盖快照。
+
+账号扫码、重新授权、超时与故障恢复操作见 [授权操作说明](docs/AUTHORIZATION_OPERATIONS.md)。

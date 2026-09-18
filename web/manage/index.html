@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>账号授权与验证 · 推广数据大屏</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f4f6f9;color:#18283d;font:15px/1.6 system-ui,sans-serif}main{max-width:1250px;margin:40px auto;padding:0 24px}h1{font-size:30px;margin:0 0 6px}h2{font-size:21px;margin:0}p{color:#53667d}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:24px 0}#refresh{white-space:nowrap;flex-shrink:0}.badge{background:#e6edf7;padding:6px 14px;border-radius:20px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;background:white;border:1px solid #dce4ee}th,td{text-align:left;padding:14px 16px;border-bottom:1px solid #e6ebf1;vertical-align:top}th{background:#eef3f9;font-weight:600}button,.desktop-link{font:inherit;cursor:pointer;border:1px solid #b8c9dd;border-radius:6px;padding:6px 11px;background:white;color:#214b7b;margin:2px;text-decoration:none;display:inline-block}button.primary{background:#185ec0;color:white;border-color:#185ec0}button:disabled{opacity:.5;cursor:default}.muted{font-size:12px;color:#637890}.ok{color:#187646}.pending{color:#8a5b08}#notice{min-height:32px;color:#214b7b;overflow-wrap:anywhere}.authorization{margin:0 0 24px;background:#fff;border:1px solid #b6cbea;border-radius:12px;padding:22px}.authorization[hidden], [hidden]{display:none!important}.authorization .top{margin:0 0 8px;align-items:flex-start}.authorization p{margin:8px 0}.authorization iframe{width:100%;height:560px;border:1px solid #dce4ee;border-radius:8px;background:#eef3f9}.authorization-status{font-weight:600;color:#214b7b}.authorization-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}#authorization-message{overflow-wrap:anywhere}.account-actions{min-width:220px}.account-message{max-width:290px;overflow-wrap:anywhere}dialog{border:0;border-radius:12px;width:min(850px,95vw);box-shadow:0 20px 80px #0004}dialog::backdrop{background:#16284166}textarea{width:100%;min-height:340px;border:1px solid #c0cfdd;border-radius:6px;padding:15px;font:13px/1.5 monospace}#notification-editor select,#notification-editor input{font:inherit;border:1px solid #b8c9dd;border-radius:6px;padding:8px;margin-top:5px}#notification-editor select{min-width:170px}.actions{text-align:right;margin-top:15px}@media(max-width:700px){main{margin:24px auto;padding:0 14px}th,td{padding:10px}table{min-width:700px}.top{align-items:flex-start}h1{font-size:25px}.authorization{padding:15px}.authorization iframe{height:440px}.authorization .top{display:block}.badge{display:inline-block;font-size:13px}}
+</style>
+<main>
+<h1>账号授权与验证</h1>
+<p>在授权窗口登录目标账号，验证身份后保存授权。公开网页采集的账号无需登录。此页面用于授权与只读验证。</p>
+<div class="top"><span id="summary" class="badge">正在读取账号清单</span><button id="refresh">刷新状态</button></div>
+<div id="notice" role="status" aria-live="polite"></div>
+<section id="authorization" class="authorization" hidden aria-labelledby="authorization-title">
+  <div class="top"><div><h2 id="authorization-title">账号授权</h2><p id="authorization-target"></p></div><span id="authorization-state" class="badge"></span></div>
+  <p id="authorization-guide">请扫码或使用平台提供的登录方式，确认当前登录的是下方目标账号。登录后点击“已完成登录，验证并保存”。</p>
+  <p id="authorization-message" class="authorization-status" role="status" aria-live="polite"></p>
+  <p id="authorization-expiry" class="muted"></p>
+  <div id="desktop-area" hidden><iframe id="authorization-desktop" title="当前账号的独立授权桌面" referrerpolicy="same-origin" allow="clipboard-read; clipboard-write"></iframe></div>
+  <p id="local-desktop" hidden>请在已打开的独立 Chrome 窗口中登录目标账号，完成后回到此页验证并保存。</p>
+  <div class="authorization-actions"><button id="authorization-complete" class="primary">已完成登录，验证并保存</button><button id="authorization-cancel">取消授权</button><a id="desktop-link" class="desktop-link" target="_blank" rel="noopener noreferrer" hidden>单独打开授权桌面</a></div>
+  <p class="muted">同一时间只授权一个账号。保存前会检查身份和会话恢复；内容完整性、指标及评论覆盖以“采集验证”列的结果为准。</p>
+</section>
+<div class="table-wrap"><table><thead><tr><th>账号</th><th>平台</th><th>登录授权</th><th>采集验证</th><th>评论邮件通知</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
+<p class="muted">授权过期时可重新授权。“采集验证通过”须满足当前平台的数据覆盖要求；修改配置后请重新验证。</p>
+</main>
+<dialog id="editor"><h2 id="editTitle">采集配置</h2><p>用于授权后的流程校准。请勿在此填写密码或登录凭证。</p><textarea id="config" aria-label="账号采集配置"></textarea><div class="actions"><button id="cancel">取消</button><button id="save" class="primary">保存配置</button></div></dialog>
+<dialog id="notification-editor"><h2 id="notification-title">评论邮件通知</h2><p>仅设置当前账号的新评论邮件。关闭后，尚未发送的该账号提醒也会停止发送；本地测试不会发送邮件。</p><label for="notification-mode">通知方式</label><select id="notification-mode"><option value="inherit">沿用平台默认</option><option value="enabled">单独开启</option><option value="disabled">关闭通知</option></select><p id="notification-default" class="muted"></p><div id="notification-fields"><p><label for="notification-email">收件人邮箱</label><br><input id="notification-email" type="email" autocomplete="off" maxlength="254" style="width:min(100%,420px);padding:8px"></p><p><label for="notification-owner">负责人（可选）</label><br><input id="notification-owner" maxlength="80" style="width:min(100%,420px);padding:8px"></p></div><div class="actions"><button id="notification-cancel">取消</button><button id="notification-save" class="primary">保存通知设置</button></div></dialog>
+<script>
+const csrf="__CSRF_TOKEN__";
+const labels={bilibili:"B站",douyin:"抖音",wechat_channels:"视频号",xiaohongshu:"小红书",zhihu:"知乎",wechat_service:"服务号",wechat_subscription:"订阅号",csdn:"CSDN",elecfans:"电子发烧友",baijiahao:"百家号",sohu:"搜狐号",toutiao:"今日头条"};
+const authLabels={unconfigured:"尚未授权",authorizing:"正在授权",reauth_required:"需要重新授权",authorized:"已授权",unverified:"授权待验证"};
+let accountData=[],activeSession=null,activeAccount="",notificationAccount="",authorizationRequest=false,sessionKnown=false,refreshId=0;
+const pendingActions=new Set();
+const el=id=>document.getElementById(id);
+function notice(text){el("notice").textContent=text||""}
+async function post(path,data){const r=await fetch(path,{method:"POST",headers:{"Content-Type":"application/json","X-CSRF-Token":csrf},body:JSON.stringify(data)});const x=await r.json();if(!r.ok)throw Error(x.error||"操作失败");return x}
+function accountFor(key){return accountData.find(account=>account.key===key)}
+function publicAccount(account){return account.collection_mode==="public"||account.can_login===false}
+function accountName(key){const account=accountFor(key);return account?`${account.name} · ${labels[account.platform]||account.platform}`:key}
+function renderNotificationFields(){el("notification-fields").hidden=el("notification-mode").value!=="enabled"}
+function openNotification(account){
+  notificationAccount=account.key;const rule=account.notification||{};
+  el("notification-title").textContent=accountName(account.key)+" · 评论邮件通知";
+  el("notification-mode").value=rule.mode||"inherit";
+  el("notification-email").value=rule.configured_email||rule.email||"";
+  el("notification-owner").value=rule.configured_owner||rule.owner||"";
+  el("notification-default").textContent=rule.mode==="inherit"?(rule.enabled?`当前平台默认收件人：${rule.email}${rule.owner?"（"+rule.owner+"）":""}`:"当前平台没有默认收件人，沿用默认时不会发邮件。"):
+    "修改只影响该账号；其他账号仍按各自设置执行。";
+  renderNotificationFields();el("notification-editor").showModal();
+}
+function sessionExpiry(){const value=activeSession?.expires_at||accountFor(activeSession?.account)?.authorization?.expires_at;const date=value?new Date(value):null;return date&&!Number.isNaN(date.getTime())?date:null}
+function expired(){const date=sessionExpiry();return Boolean(date&&date.getTime()<=Date.now())}
+function desktopURL(value){if(typeof value!=="string"||!value)return null;try{const url=new URL(value,location.origin);return url.origin===location.origin&&url.pathname.startsWith("/desktop/")?url.href:null}catch{return null}}
+function renderAuthorization(){
+  const session=activeSession;
+  el("authorization").hidden=!session;
+  const url=session?desktopURL(session.desktop_url):null;
+  const frame=el("authorization-desktop");
+  if(url){if(frame.getAttribute("src")!==url)frame.setAttribute("src",url)}else frame.removeAttribute("src");
+  el("desktop-area").hidden=!url;el("desktop-link").hidden=!url;
+  if(url)el("desktop-link").href=url;else el("desktop-link").removeAttribute("href");
+  el("local-desktop").hidden=!session||Boolean(url);
+  if(!session)return;
+  const verifying=session.state==="verifying";
+  el("authorization-guide").textContent=accountFor(session.account)?.platform==="xiaohongshu"?"请在创作后台和小红书主站两个页面都登录同一个目标账号，再点击“已完成登录，验证并保存”。":"请扫码或使用平台提供的登录方式，确认当前登录的是目标账号。登录后点击“已完成登录，验证并保存”。";
+  el("authorization-target").textContent="目标账号："+accountName(session.account);
+  el("authorization-state").textContent=verifying?"正在验证并保存":expired()?"授权窗口已超时":session.state==="error"?"授权未完成":"等待登录";
+  el("authorization-message").textContent=session.message||(verifying?"正在核验账号并保存授权，请稍候。":"请确认目标账号后完成登录。");
+  const date=sessionExpiry();
+  el("authorization-expiry").textContent=date?`本次授权截止：${date.toLocaleString("zh-CN",{hour12:false})}${expired()?"。请取消本次授权后重新开始。":"，请在此之前完成登录。"}`:"请在本次授权窗口关闭前完成登录。";
+  el("authorization-complete").disabled=authorizationRequest||verifying||expired()||!session.operation_id;
+  el("authorization-cancel").disabled=authorizationRequest||verifying||!session.operation_id;
+}
+function renderAccounts(){
+  const rows=el("rows");rows.replaceChildren();let ready=0,authorized=0;
+  for(const account of accountData){
+    const tr=document.createElement("tr");tr.dataset.account=account.key;
+    const isPublic=publicAccount(account),health=account.health||{},auth=account.authorization||{};
+    const state=auth.status||(account.configured?"unverified":"unconfigured");
+    const isActive=activeSession?.account===account.key;
+    let authText=isPublic?"无需登录":isActive?"正在授权":authLabels[state]||"授权待验证";
+    let dataText=health.ready?"采集验证通过":health.identity_verified?"数据覆盖待验证":"尚未通过验证";
+    if(account.job?.running)dataText="只读验证中";
+    if(health.ready)ready++;if(!isPublic&&state==="authorized")authorized++;
+    for(const value of [account.name,labels[account.platform]||account.platform,authText,dataText]){const td=document.createElement("td");td.textContent=value;tr.append(td)}
+    const commentCoverage=health.metric_coverage?.comment;
+    if(health.optional_metric_keys?.includes("comment")&&typeof commentCoverage==="number"&&commentCoverage<1){const note=document.createElement("div");note.className="muted account-message";note.textContent=`部分文章未提供留言数（覆盖 ${(commentCoverage*100).toFixed(1)}%），缺失保持未知。`;tr.children[3].append(note)}
+    if(auth.message&&!isActive){const message=document.createElement("div");message.className="muted account-message";message.textContent=auth.message;tr.children[2].append(message)}
+    const notification=account.notification||{};const mail=document.createElement("td");
+    mail.textContent=notification.mode==="disabled"?"已关闭":notification.enabled?`${notification.mode==="enabled"?"单独开启":"平台默认"} · ${notification.email}`:"未开启";
+    tr.append(mail);
+    const td=document.createElement("td");td.className="account-actions";
+    const loginLabel=state==="authorized"||state==="reauth_required"?"重新授权":"开始授权";
+    for(const [name,what] of [[loginLabel,"login"],["只读验证","probe"],["配置","edit"]]){
+      const button=document.createElement("button");button.textContent=name;button.dataset.action=what;
+      button.disabled=Boolean(account.job?.running)||pendingActions.has(account.key+":"+what);
+      if(what==="login")button.disabled=button.disabled||isPublic||authorizationRequest||!sessionKnown||Boolean(activeSession);
+      if(what==="probe"&&isActive)button.disabled=true;
+      if(what==="edit")button.disabled=button.disabled||account.can_configure===false||isPublic||isActive;
+      if(isPublic&&what!=="probe")button.title="当前使用公开网页采集，无需登录配置";
+      else if(what==="login"&&activeSession)button.title="当前授权窗口用于："+accountName(activeSession.account);
+      button.onclick=()=>action(account.key,what);td.append(button);
+    }
+    const mailButton=document.createElement("button");mailButton.textContent="邮件通知";mailButton.dataset.action="notification";
+    mailButton.disabled=pendingActions.has(account.key+":notification");mailButton.onclick=()=>openNotification(account);td.append(mailButton);
+    const note=document.createElement("div");note.className="muted";
+    if(isPublic)note.textContent="公开网页采集 · 无需登录";
+    else if(activeSession)note.textContent=isActive?"请在上方完成本次授权":"授权窗口占用中："+accountName(activeSession.account);
+    if(note.textContent)td.append(note);tr.append(td);rows.append(tr);
+  }
+  el("summary").textContent=`${accountData.length} 个账号 · ${authorized} 个已授权 · ${ready} 个采集验证通过`;
+}
+function render(){renderAuthorization();renderAccounts()}
+async function refresh(){
+  if(authorizationRequest)return;
+  const id=++refreshId;
+  try{
+    const [accountsResponse,sessionResponse]=await Promise.all([fetch("/api/accounts"),fetch("/api/login-session")]);
+    if(!accountsResponse.ok)throw Error("账号状态读取失败");
+    const accounts=await accountsResponse.json();
+    if(!Array.isArray(accounts))throw Error("账号清单格式错误");
+    let session;
+    if(sessionResponse.ok)session=await sessionResponse.json();
+    else if(sessionResponse.status===404)session=accounts.find(account=>account.login_session)?.login_session||null;
+    else throw Error("授权窗口状态读取失败，请刷新后重试");
+    if(id!==refreshId||authorizationRequest)return;
+    accountData=accounts;activeSession=session;sessionKnown=true;render();
+  }catch(error){if(id===refreshId){sessionKnown=false;notice(error.message);renderAccounts()}}
+}
+async function action(key,what){
+  const account=accountFor(key),pendingKey=key+":"+what;
+  if(!account||pendingActions.has(pendingKey))return;
+  if(what==="login"&&(publicAccount(account)||authorizationRequest||activeSession||!sessionKnown))return;
+  if(what==="probe"&&activeSession?.account===key)return;
+  if(what==="edit"&&(publicAccount(account)||account.can_configure===false||activeSession?.account===key))return;
+  pendingActions.add(pendingKey);
+  if(what==="login"){authorizationRequest=true;++refreshId}render();
+  try{
+    if(what==="edit"){
+      const result=await post("/api/config/read",{account:key});activeAccount=key;
+      el("editTitle").textContent=accountName(key)+" · 配置";el("config").value=JSON.stringify(result,null,2);el("editor").showModal();return;
+    }
+    const result=await post("/api/"+what,{account:key});
+    if(what==="login"){
+      activeSession=result.login_session||null;
+      notice(result.message||(activeSession?"授权窗口已打开，请确认目标账号后登录。":"请在独立 Chrome 窗口中登录，完成后执行只读验证。"));
+    }else notice(result.message||"只读验证已提交");
+  }catch(error){notice(error.message)}
+  finally{pendingActions.delete(pendingKey);if(what==="login")authorizationRequest=false;render();if(what!=="edit")await refresh()}
+}
+async function finishAuthorization(cancel){
+  const session=activeSession;
+  if(!session?.operation_id||authorizationRequest||session.state==="verifying"||(!cancel&&expired()))return;
+  const account=session.account,operation_id=session.operation_id;
+  authorizationRequest=true;++refreshId;render();
+  try{
+    const result=await post(cancel?"/api/authorization/cancel":"/api/authorization/complete",{account,operation_id});
+    activeSession=cancel?null:result.login_session||{...session,state:"verifying"};
+    notice(result.message||(cancel?"本次授权已取消。":"正在验证身份并保存授权，请稍候。"));
+  }catch(error){notice(error.message)}
+  finally{authorizationRequest=false;render();await refresh()}
+}
+el("refresh").onclick=refresh;
+el("authorization-complete").onclick=()=>finishAuthorization(false);
+el("authorization-cancel").onclick=()=>finishAuthorization(true);
+el("cancel").onclick=()=>el("editor").close();
+el("save").onclick=async()=>{if(el("save").disabled)return;el("save").disabled=true;try{await post("/api/config/save",{account:activeAccount,settings:JSON.parse(el("config").value)});el("editor").close();notice("已保存配置，请重新验证。");await refresh()}catch(error){notice(error.message)}finally{el("save").disabled=false}};
+el("notification-mode").onchange=renderNotificationFields;
+el("notification-cancel").onclick=()=>el("notification-editor").close();
+el("notification-save").onclick=async()=>{
+  if(el("notification-save").disabled||!notificationAccount)return;
+  const mode=el("notification-mode").value,rule=mode==="enabled"?{mode,email:el("notification-email").value.trim(),owner:el("notification-owner").value.trim()}:{mode};
+  el("notification-save").disabled=true;
+  try{await post("/api/notifications/save",{account:notificationAccount,rule});el("notification-editor").close();notice("评论邮件通知设置已保存。");await refresh()}
+  catch(error){notice(error.message)}finally{el("notification-save").disabled=false}
+};
+refresh();setInterval(refresh,5000);setInterval(()=>{if(activeSession)renderAuthorization()},1000);
+</script>
+</html>

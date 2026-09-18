@@ -130,6 +130,11 @@ function threadMetrics(threads) {
   };
 }
 
+function dailyLimitLabel(value) {
+  if (value == null || value === "" || !Number.isFinite(Number(value))) return "日上限未知";
+  return Number(value) > 0 ? `上限 ${Number(value)} 次` : "未设每日上限";
+}
+
 function renderKpis(threads) {
   const metrics = threadMetrics(threads);
   const usage = DATA.api_usage || {};
@@ -139,7 +144,7 @@ function renderKpis(threads) {
     ["待回复", metrics.pending, "按当前筛选", "#f5c34d"],
     ["官方回复率", `${(metrics.rate * 100).toFixed(0)}%`, `${metrics.replied}/${metrics.comments || 0}`, "#a78bfa"],
     ["响应中位数", formatDuration(metrics.median), `${Number.isFinite(metrics.p90) ? `P90 ${formatDuration(metrics.p90)}` : "暂无有效样本"}`, "#60a5fa"],
-    ["今日 API", usage.used ?? 0, `上限 ${usage.limit ?? "--"} 次`, "#f87171"],
+    ["今日采集操作", usage.used ?? 0, dailyLimitLabel(usage.limit), "#f87171"],
   ];
   $("kpiStrip").innerHTML = cards.map(([label, value, sub, color]) => `
     <article class="kpi" style="--accent:${color}">
@@ -157,11 +162,11 @@ function renderBudget() {
   const level = ratio >= .9 ? "error" : ratio >= .7 ? "warn" : "";
   const tasks = Object.entries(usage.by_task || {}).sort((left, right) => right[1] - left[1]);
   $("apiBudget").innerHTML = `
-    <div class="budget-number"><strong>${used}</strong><span>/ ${limit || "未设上限"} 次</span></div>
-    <div class="budget-meter ${level}" style="--usage:${(ratio * 100).toFixed(1)}%"><i></i></div>
+    <div class="budget-number"><strong>${used}</strong><span>${esc(dailyLimitLabel(usage.limit))}</span></div>
+    ${limit > 0 ? `<div class="budget-meter ${level}" style="--usage:${(ratio * 100).toFixed(1)}%"><i></i></div>` : ""}
     <div class="usage-breakdown">${tasks.map(([task, count]) => `
       <div class="usage-row"><span>${esc(TASK_LABEL[task] || task)}</span><strong>${count}</strong></div>`).join("")
-      || `<div class="usage-row"><span>今日尚无 TikHub 调用</span><strong>0</strong></div>`}</div>`;
+      || `<div class="usage-row"><span>今日尚无 平台采集 调用</span><strong>0</strong></div>`}</div>`;
 }
 
 function renderUsageChart() {
@@ -169,7 +174,7 @@ function renderUsageChart() {
   const history = (DATA.api_usage?.history || []).slice(-14);
   const dates = history.map((day) => String(day.date || "").slice(5));
   const values = history.map((day) => Number(day.used) || 0);
-  const limits = history.map((day) => Number(day.limit) || Number(DATA.api_usage?.limit) || 0);
+  const limits = history.map((day) => Number(day.limit) > 0 ? Number(day.limit) : null);
   usageChart.setOption({
     animationDuration: 350,
     aria: { enabled: true, decal: { show: false } },
@@ -181,7 +186,7 @@ function renderUsageChart() {
       { name: "实际调用", type: "bar", data: values, barMaxWidth: 26, itemStyle: { color: "#38d9f5", borderRadius: [3, 3, 0, 0] } },
       { name: "每日上限", type: "line", data: limits, symbol: "none", lineStyle: { color: "#f87171", type: "dashed", width: 1.5 } },
     ],
-    graphic: history.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "暂无 API 用量记录", fill: "#8296bd" } }],
+    graphic: history.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "暂无 采集操作记录", fill: "#8296bd" } }],
   }, true);
 }
 
@@ -195,7 +200,7 @@ function renderStatus() {
   const usageStarted = DATA.api_usage?.tracking_started_at;
   status.innerHTML = `<strong>时间线起点：${esc(started)}</strong><span>·</span>
     <span>上轮检查 ${scan.detail_contents ?? 0} 条内容，一级 ${scan.root_pages ?? 0} 页，条件回复 ${scan.reply_pages ?? 0} 页</span>
-    ${usageStarted ? `<span>· API 记账自 ${esc(shortTime(usageStarted))} 开始</span>` : ""}`;
+    ${usageStarted ? `<span>· 采集记账自 ${esc(shortTime(usageStarted))} 开始</span>` : ""}`;
 }
 
 function renderTimeline(threads) {

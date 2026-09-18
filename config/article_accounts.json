@@ -58,7 +58,7 @@
       "provided_id": "1789772104548882",
       "platform_uid": "1789772104548882",
       "profile_url": "https://author.baidu.com/home?from=bjh_article&app_id=1789772104548882",
-      "note": "用户提供的百家号原始主页链接；账号名已精确核验，可分页采集文章"
+      "note": "使用授权创作后台，按原始app_id核验身份并分页采集图文；每个账号需独立授权"
     },
     {
       "platform": "baijiahao",
@@ -70,7 +70,7 @@
       "provided_id": "1789404703579192",
       "platform_uid": "1789404703579192",
       "profile_url": "https://author.baidu.com/home?from=bjh_article&app_id=1789404703579192",
-      "note": "用户提供的百家号原始主页链接；账号名已精确核验，可分页采集文章"
+      "note": "使用授权创作后台，按原始app_id核验身份并分页采集图文；每个账号需独立授权"
     },
     {
       "platform": "baijiahao",
@@ -82,7 +82,7 @@
       "provided_id": "1794578543034277",
       "platform_uid": "1794578543034277",
       "profile_url": "https://author.baidu.com/home?from=bjh_article&app_id=1794578543034277",
-      "note": "用户提供的百家号原始主页链接；账号名已精确核验，可分页采集文章"
+      "note": "使用授权创作后台，按原始app_id核验身份并分页采集图文；每个账号需独立授权"
     },
     {
       "platform": "zhihu",
@@ -106,7 +106,7 @@
       "provided_id": "zhifxi5atvi",
       "platform_uid": "zhifxi5atvi",
       "profile_url": "https://www.zhihu.com/people/zhifxi5atvi",
-      "note": "TikHub 知乎用户资料与文章接口"
+      "note": "知乎授权创作后台文章采集；该账号留到实际运行时授权"
     },
     {
       "platform": "wechat_service",
@@ -165,6 +165,7 @@
       "collector": "toutiao",
       "provided_id": "1361637085287179",
       "platform_uid": "1361637085287179",
+      "expected_media_id": "1866310957476868",
       "profile_url": "https://www.toutiao.com/c/user/1361637085287179/",
       "note": "今日头条公开作者页浏览器直采；动态解析作者 token、账号指标与文章列表"
     },

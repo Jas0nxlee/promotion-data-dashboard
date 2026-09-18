@@ -3,7 +3,7 @@
 """图文推广数据采集器。
 
 公开页面采集：CSDN、电子发烧友、百家号、今日头条、搜狐；
-TikHub API 采集：知乎、公众号、小红书；其余平台可导入后台数据。
+授权后台采集：知乎、公众号、小红书；其余平台保留公开直采。
 """
 
 import argparse
@@ -26,7 +26,6 @@ from snapshot_utils import (
     is_suspicious_drop,
     merge_records,
 )
-from api_budget import ApiBudget
 
 try:
     import requests
@@ -37,14 +36,19 @@ except ImportError:
         ".venv/bin/python -m pip install -r requirements.txt")
 
 
+from runtime import DATA, WEB, load_env as load_dotenv
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = ROOT / "config" / "article_accounts.json"
-OUT_PATH = ROOT / "data" / "article_dashboard_data.json"
-MANUAL_PATH = ROOT / "data" / "article_manual_input.json"
-DEBUG_DIR = ROOT / "data" / "debug" / "articles"
-WEB_JSON_PATH = ROOT / "web" / "articles" / "data" / "article_dashboard_data.json"
-WEB_JS_PATH = ROOT / "web" / "articles" / "data" / "article_dashboard_data.js"
-TIKHUB_BASE_URL = "https://api.tikhub.io"
+OUT_PATH = DATA / "article_dashboard_data.json"
+MANUAL_PATH = DATA / "article_manual_input.json"
+DEBUG_DIR = DATA / "debug" / "articles"
+WEB_JSON_PATH = WEB / "articles" / "data" / "article_dashboard_data.json"
+WEB_JS_PATH = WEB / "articles" / "data" / "article_dashboard_data.js"
+from providers import ProviderRegistry
+from providers.history import retain_known
+from providers.health import record_verification
+from providers.public_articles import (PUBLIC_ARTICLE_PLATFORMS, annotate_public_articles,
+                                      record_public_article_verification)
 CN_TZ = timezone(timedelta(hours=8))
 
 PLATFORM_LABEL = {
@@ -58,17 +62,6 @@ PLATFORM_LABEL = {
     "sohu": "搜狐",
     "xiaohongshu": "小红书",
 }
-
-
-def load_dotenv():
-    env_file = ROOT / ".env"
-    if not env_file.exists():
-        return
-    for line in env_file.read_text(encoding="utf-8").splitlines():
-        line = line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key, value = line.split("=", 1)
-            os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 
 def compact_error(exc, limit=400):
@@ -215,7 +208,7 @@ def unwrap_data(obj):
 
 
 def unwrap_service_data(obj):
-    """继续展开 TikHub 内层上游服务的 code/success/data 包装。"""
+    """继续展开 历史上游服务的 code/success/data 包装。"""
     current = unwrap_data(obj)
     for _ in range(3):
         if not isinstance(current, dict) or not isinstance(current.get("data"), dict):
@@ -258,7 +251,7 @@ class HttpClient:
         self.min_interval = min_interval
         self.last_call = 0.0
         self.call_count = 0
-        self.budget = ApiBudget(default_task="article_data")
+
 
     def get(self, url, *, params=None, headers=None, timeout=30, retries=3, tag="page"):
         last_error = "未知错误"
@@ -267,7 +260,7 @@ class HttpClient:
             if wait > 0:
                 time.sleep(wait)
             self.last_call = time.time()
-            self.budget.consume(path)
+
             self.call_count += 1
             try:
                 response = self.session.get(url, params=params, headers=headers, timeout=timeout)
@@ -296,56 +289,6 @@ class HttpClient:
             path = DEBUG_DIR / f"{tag}_{int(time.time() * 1000)}.json"
             path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         return payload
-
-
-class TikHubClient:
-    def __init__(self, api_key, debug=False, min_interval=0.6):
-        self.api_key = api_key
-        self.session = requests.Session()
-        self.session.headers.update({
-            "Authorization": f"Bearer {api_key}",
-            "Accept": "application/json",
-        })
-        self.debug = debug
-        self.min_interval = min_interval
-        self.last_call = 0.0
-        self.call_count = 0
-
-    def _request(self, method, path, *, params=None, payload=None, timeout=35, retries=3, tag="api"):
-        if not self.api_key:
-            raise RuntimeError("缺少 TIKHUB_API_KEY，无法采集需要 TikHub 的账号")
-        url = f"{TIKHUB_BASE_URL}{path}"
-        last_error = "未知错误"
-        for attempt in range(1, retries + 1):
-            wait = self.min_interval - (time.time() - self.last_call)
-            if wait > 0:
-                time.sleep(wait)
-            self.last_call = time.time()
-            self.call_count += 1
-            try:
-                response = self.session.request(method, url, params=params, json=payload, timeout=timeout)
-                if response.status_code == 200:
-                    payload = response.json()
-                    if self.debug:
-                        DEBUG_DIR.mkdir(parents=True, exist_ok=True)
-                        path_out = DEBUG_DIR / f"{tag}_{int(time.time() * 1000)}.json"
-                        path_out.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
-                                            encoding="utf-8")
-                    return payload
-                last_error = f"HTTP {response.status_code}: {response.text[:180]}"
-                if response.status_code in (401, 403):
-                    break
-            except (requests.RequestException, ValueError) as exc:
-                last_error = compact_error(exc)
-            if attempt < retries:
-                time.sleep(min(2 ** attempt, 5))
-        raise RuntimeError(f"API 请求失败 {path}: {last_error}")
-
-    def get(self, path, **kwargs):
-        return self._request("GET", path, **kwargs)
-
-    def post(self, path, **kwargs):
-        return self._request("POST", path, **kwargs)
 
 
 def base_account(account):
@@ -386,41 +329,60 @@ class CsdnCollector:
         self.max_pages = max_pages
 
     def profile(self, username):
-        result = {}
-        for _ in range(3):
-            try:
-                response = self.http.get(
-                    f"https://blog.csdn.net/{username}",
-                    params={"_": f"{int(time.time() * 1000)}{random.randint(10, 99)}"},
-                    retries=1, tag=f"csdn_profile_{username}")
-                marker = "window.__INITIAL_STATE__="
-                pos = response.text.find(marker)
-                if pos < 0:
-                    continue
-                raw = response.text[pos + len(marker):].lstrip()
-                state, _ = json.JSONDecoder().raw_decode(raw)
-                info = dig(state, "pageData.data.baseInfo", default={}) or {}
-                user = info.get("userModule", {})
-                achievement = info.get("achievementModule", {})
-                result = {
-                    "nickname": user.get("nickname"),
-                    "followers": to_int(achievement.get("fansCount")),
-                    "profile_original_articles": to_int(achievement.get("originalCount")),
-                    "lifetime_reads": to_int(dig(achievement, "wholeSiteViewCount.total")),
-                }
-                for item in achievement.get("achievementList", []) or []:
-                    template = item.get("template", "")
-                    value = to_int(item.get("variable"))
-                    if "点赞" in template:
-                        result["lifetime_likes"] = value
-                    elif "评论" in template:
-                        result["lifetime_comments"] = value
-                    elif "收藏" in template:
-                        result["lifetime_collects"] = value
-                return result
-            except (RuntimeError, ValueError, KeyError, json.JSONDecodeError):
-                time.sleep(0.2)
+        response = self.http.get(
+            f"https://blog.csdn.net/{username}", retries=1,
+            tag=f"csdn_profile_{username}")
+        try:
+            state = parse_json_after_marker(response.text, "window.__INITIAL_STATE__=")
+        except (ValueError, TypeError):
+            raise RuntimeError("CSDN 主页缺少身份数据，可能需要人工安全验证") from None
+        info = dig(state, "pageData.data.baseInfo", default={}) or {}
+        user = info.get("userModule", {})
+        if not isinstance(user, dict) or user.get("username") != username:
+            raise RuntimeError("CSDN 主页 username 与配置不一致")
+        blog = urlparse(user.get("blogUrl") or "")
+        if blog.hostname != "blog.csdn.net" or blog.path.rstrip("/") != "/" + username:
+            raise RuntimeError("CSDN 主页作者链接与配置不一致")
+        achievement = info.get("achievementModule", {})
+        result = {"verified_account_id": username, "data_source": "csdn_public",
+                  "nickname": user.get("nickname"),
+                  "followers": to_int(achievement.get("fansCount")),
+                  "profile_original_articles": to_int(achievement.get("originalCount")),
+                  "lifetime_reads": to_int(dig(achievement, "wholeSiteViewCount.total"))}
+        for item in achievement.get("achievementList", []) or []:
+            template = item.get("template", "")
+            value = to_int(item.get("variable"))
+            if "点赞" in template:
+                result["lifetime_likes"] = value
+            elif "评论" in template:
+                result["lifetime_comments"] = value
+            elif "收藏" in template:
+                result["lifetime_collects"] = value
         return result
+
+    def _get_page(self, username, page):
+        # This public listing returned HTTP 521 at page 12 during a fast scan,
+        # while the same page was readable later. Pace CSDN separately from
+        # other public sites; retry only that server error on the same page.
+        for attempt in range(3):
+            quiet = 7 - (time.time() - getattr(self.http, "last_call", 0.0))
+            if quiet > 0:
+                time.sleep(quiet)
+            try:
+                return self.http.get_json(
+                    "https://blog.csdn.net/community/home-api/v1/get-business-list",
+                    params={
+                        "page": page, "size": 100, "businessType": "blog",
+                        "orderby": "", "noMore": "false", "year": "", "month": "",
+                        "username": username, "_": f"{int(time.time() * 1000)}{page}",
+                    },
+                    headers={"Referer": f"https://blog.csdn.net/{username}",
+                             "Accept": "application/json, text/plain, */*"},
+                    retries=1, tag=f"csdn_articles_{username}_{page}")
+            except RuntimeError as exc:
+                if "HTTP 521" not in str(exc) or attempt == 2:
+                    raise
+                time.sleep(7 * (attempt + 1))
 
     def collect(self, account):
         username = account.get("platform_uid", "").strip()
@@ -437,35 +399,41 @@ class CsdnCollector:
         page = 1
         while page <= self.max_pages:
             try:
-                payload = self.http.get_json(
-                    "https://blog.csdn.net/community/home-api/v1/get-business-list",
-                    params={
-                        "page": page,
-                        "size": page_size,
-                        "businessType": "blog",
-                        "orderby": "",
-                        "noMore": "false",
-                        "year": "",
-                        "month": "",
-                        "username": username,
-                        "_": f"{int(time.time() * 1000)}{page}",
-                    },
-                    headers={
-                        "Referer": f"https://blog.csdn.net/{username}",
-                        "Accept": "application/json, text/plain, */*",
-                    },
-                    tag=f"csdn_articles_{username}_{page}")
-                data = payload.get("data", {}) if isinstance(payload, dict) else {}
-                items = data.get("list", []) or []
+                payload = self._get_page(username, page)
+                if not isinstance(payload, dict) or payload.get("code") != 200:
+                    raise RuntimeError("CSDN 文章接口业务状态未成功")
+                data = payload.get("data")
+                if not isinstance(data, dict) or not isinstance(data.get("list"), list):
+                    raise RuntimeError("CSDN 文章列表结构缺失")
+                items = data["list"]
+                total_value = data.get("total")
+                if isinstance(total_value, bool) or not re.fullmatch(r"\d+", str(total_value)):
+                    raise RuntimeError("CSDN 文章总数缺失或无效")
+                current_total = int(total_value)
                 if page == 1:
-                    api_total = to_int(data.get("total"), len(items))
+                    api_total = current_total
+                elif current_total != api_total:
+                    raise RuntimeError("CSDN 文章总数在分页期间变化")
                 if not items:
+                    if len(articles) != api_total:
+                        raise RuntimeError("CSDN 提前返回空页，尚未覆盖声明总数")
                     break
+                page_articles, page_ids = [], set()
                 for item in items:
+                    if not isinstance(item, dict):
+                        raise RuntimeError("CSDN 文章记录格式改变")
                     article_id = str(item.get("articleId") or "")
-                    if not article_id or article_id in seen:
+                    if not article_id.isdigit() or isinstance(item.get("articleId"), (bool, float)):
+                        raise RuntimeError("CSDN 文章缺少精确稳定 ID")
+                    parsed_url = urlparse(item.get("url") or "")
+                    if (parsed_url.scheme != "https" or parsed_url.hostname != "blog.csdn.net"
+                            or parsed_url.path != f"/{username}/article/details/{article_id}"):
+                        raise RuntimeError("CSDN 文章作者或 URL ID 与当前账号不一致")
+                    if article_id in page_ids:
+                        raise RuntimeError("CSDN 同页出现重复文章 ID")
+                    page_ids.add(article_id)
+                    if article_id in seen:
                         continue
-                    seen.add(article_id)
                     tags = [tag.get("name", "") if isinstance(tag, dict) else str(tag)
                             for tag in (item.get("tags") or [])]
                     pictures = item.get("picList") or []
@@ -475,6 +443,8 @@ class CsdnCollector:
                             else str(pictures[0])
                     article = {
                         "article_id": article_id,
+                        "data_source": "csdn_public",
+                        "source_author_id": username,
                         "title": item.get("title", ""),
                         "cover": cover,
                         "url": item.get("url") or f"https://blog.csdn.net/{username}/article/details/{article_id}",
@@ -489,9 +459,17 @@ class CsdnCollector:
                             "collect": to_int(item.get("collectCount")),
                         },
                     }
-                    articles.append(attach_account(article, account))
-                if len(items) < page_size or len(articles) >= (api_total or len(articles)):
+                    page_articles.append(attach_account(article, account))
+                if not page_articles:
+                    raise RuntimeError("CSDN 分页重复，没有新增文章")
+                if len(articles) + len(page_articles) > api_total:
+                    raise RuntimeError("CSDN 文章数超过声明总数")
+                seen.update(row["article_id"] for row in page_articles)
+                articles.extend(page_articles)
+                if len(articles) == api_total:
                     break
+                if len(items) < page_size:
+                    raise RuntimeError("CSDN 提前返回短页，尚未覆盖声明总数")
                 page += 1
             except Exception as exc:
                 if not articles:
@@ -519,17 +497,46 @@ class ElecfansCollector:
         self.max_pages = max_pages
 
     @staticmethod
+    def page_identity(html, account):
+        soup = BeautifulSoup(html, "html.parser")
+        uid = str(account.get("platform_uid") or "")
+        current = soup.select_one('.column-nav li.current a[href]')
+        nickname = soup.select_one('.user-top .user-name')
+        if current is None or nickname is None:
+            raise RuntimeError("电子发烧友主页缺少当前作者身份，可能需要人工安全验证")
+        target = urlparse(urljoin("https://bbs.elecfans.com/", current.get("href", "")))
+        if target.hostname != "bbs.elecfans.com" or target.path.rstrip("/") != f"/user/{uid}/articles":
+            raise RuntimeError("电子发烧友当前作者 UID 与项目配置不一致")
+        total_node = current.parent.select_one('span')
+        total_text = total_node.get_text(strip=True) if total_node else ""
+        if not total_text.isdigit():
+            raise RuntimeError("电子发烧友主页缺少可信文章总数")
+        active = soup.select_one('.pg strong')
+        page_text = active.get_text(strip=True) if active else "1"
+        if not page_text.isdigit():
+            raise RuntimeError("电子发烧友当前页码无效")
+        return {"verified_account_id": uid, "data_source": "elecfans_public",
+                "nickname": nickname.get_text(" ", strip=True),
+                "total_articles": int(total_text), "current_page": int(page_text)}
+
+    @staticmethod
     def parse_page(html, account):
         soup = BeautifulSoup(html, "html.parser")
-        rows = []
-        for item in soup.select("li"):
+        rows, seen = [], set()
+        for item in soup.select(".article-list > li"):
             link = item.select_one('.art-list-top a[href*="/d/"]')
             if not link:
                 continue
             url = urljoin("https://www.elecfans.com", link.get("href", ""))
-            id_match = re.search(r"/d/(\d+)\.html", url)
+            parsed = urlparse(url)
+            id_match = re.fullmatch(r"/d/(\d+)\.html", parsed.path)
+            if parsed.hostname != "www.elecfans.com" or parsed.scheme != "https":
+                raise RuntimeError("电子发烧友文章链接指向非平台域名")
             if not id_match:
-                continue
+                raise RuntimeError("电子发烧友文章链接缺少稳定 ID")
+            if id_match.group(1) in seen:
+                raise RuntimeError("电子发烧友同页出现重复文章 ID")
+            seen.add(id_match.group(1))
             title_node = link.select_one("h3")
             time_node = (item.select_one(".art-list-top .time span[title]")
                          or item.select_one(".art-list-top .time"))
@@ -545,6 +552,8 @@ class ElecfansCollector:
                     comment_value = to_int(text)
             article = {
                 "article_id": id_match.group(1),
+                "data_source": "elecfans_public",
+                "verified_owner_account_id": str(account.get("platform_uid") or ""),
                 "title": title_node.get_text(" ", strip=True) if title_node else link.get_text(" ", strip=True),
                 "cover": (image_node.get("src") or image_node.get("data-src") or "") if image_node else "",
                 "url": url,
@@ -563,8 +572,16 @@ class ElecfansCollector:
             }
             rows.append(attach_account(article, account))
         page_numbers = []
-        for link in soup.select('a[href*="/articles/"]'):
-            match = re.search(r"/articles/(\d+)/?", link.get("href", ""))
+        uid = str(account.get("platform_uid") or "")
+        for link in soup.select('.pg a[href]'):
+            target = urlparse(urljoin("https://bbs.elecfans.com/", link.get("href", "")))
+            match = re.fullmatch(r"/user/" + re.escape(uid) + r"/articles/(\d+)/?", target.path)
+            if target.hostname != "bbs.elecfans.com" or not match:
+                raise RuntimeError("电子发烧友分页地址不属于当前作者")
+            page_numbers.append(int(match.group(1)))
+        for node in soup.select('.pg strong, .pg span[title]'):
+            value = node.get('title') or node.get_text(strip=True)
+            match = re.fullmatch(r"(?:共\s*)?(\d+)(?:\s*页)?", value)
             if match:
                 page_numbers.append(int(match.group(1)))
         return rows, max(page_numbers, default=1)
@@ -574,10 +591,19 @@ class ElecfansCollector:
         base_url = account.get("profile_url") or f"https://bbs.elecfans.com/user/{uid}/articles/"
         if not uid:
             raise RuntimeError("缺少电子发烧友用户 ID")
+        configured = urlparse(base_url)
+        if configured.hostname != "bbs.elecfans.com" or configured.path.rstrip("/") != f"/user/{uid}/articles":
+            raise RuntimeError("电子发烧友配置主页与用户 ID 不一致")
         entry = base_account(account)
         articles, seen = [], set()
-        first = self.http.get(base_url, tag=f"elecfans_{uid}_1")
+        first = self.http.get(base_url, retries=1, tag=f"elecfans_{uid}_1")
+        identity = self.page_identity(first.text, account)
+        entry.update({k: v for k, v in identity.items() if k != "current_page"})
+        if identity["current_page"] != 1:
+            raise RuntimeError("电子发烧友首页返回了其他页码")
         first_rows, discovered_last_page = self.parse_page(first.text, account)
+        if not first_rows and identity["total_articles"]:
+            raise RuntimeError("电子发烧友首页为空但声明有文章，暂停替换")
         for article in first_rows:
             seen.add(article["article_id"])
             articles.append(article)
@@ -588,25 +614,31 @@ class ElecfansCollector:
         for page in range(2, last_page + 1):
             try:
                 page_url = f"{base_url.rstrip('/')}/{page}/"
-                response = self.http.get(page_url, tag=f"elecfans_{uid}_{page}")
-                pages_collected = page
-                rows, _ = self.parse_page(response.text, account)
+                response = self.http.get(page_url, retries=1, tag=f"elecfans_{uid}_{page}")
+                current_identity = self.page_identity(response.text, account)
+                if current_identity["current_page"] != page or current_identity["total_articles"] != identity["total_articles"]:
+                    raise RuntimeError("电子发烧友页码或文章总数在分页期间变化")
+                rows, current_last_page = self.parse_page(response.text, account)
+                if current_last_page != discovered_last_page:
+                    raise RuntimeError("电子发烧友总页数在分页期间变化")
                 if not rows:
-                    if page < discovered_last_page:
-                        page_error = f"第 {page} 页为空，公开分页可能未完整返回"
-                    break
+                    raise RuntimeError("电子发烧友分页提前为空，未证明完整覆盖")
                 new_rows = [row for row in rows if row["article_id"] not in seen]
                 if not new_rows:
-                    break
+                    raise RuntimeError("电子发烧友分页重复，没有新增文章")
                 for article in new_rows:
                     seen.add(article["article_id"])
                     articles.append(article)
+                pages_collected = page
             except Exception as exc:
                 page_error = f"第 {page} 页采集失败：{compact_error(exc)}"
                 break
-        if not articles:
+        if not articles and identity["total_articles"]:
             raise RuntimeError("电子发烧友公开主页未解析到文章")
-        entry["total_articles"] = None if (page_error or page_capped) else len(articles)
+        if len(articles) > identity["total_articles"]:
+            raise RuntimeError("电子发烧友文章数量超过主页声明总数")
+        if not page_error and not page_capped and len(articles) != identity["total_articles"]:
+            page_error = "电子发烧友已到尾页，但文章数量与主页声明总数不符"
         entry["covered_articles"] = len(articles)
         entry["pages_collected"] = pages_collected
         entry["pages_available"] = discovered_last_page
@@ -666,6 +698,7 @@ class BaijiahaoCollector:
 
         articles, seen = [], set()
         cursor = None
+        seen_cursors = set()
         has_more = False
         page_error = ""
         request_headers = {**self.BAIDU_APP_HEADERS, "Referer": profile_url}
@@ -678,7 +711,12 @@ class BaijiahaoCollector:
                 payload = parse_json_after_marker(response.text, "window.dynamicData=")
                 if payload.get("foe", {}).get("is_need_foe"):
                     raise RuntimeError("百家号触发访问校验")
-                items = payload.get("list") or []
+                if (not isinstance(payload.get("list"), list)
+                        or type(payload.get("hasMore")) not in (bool, int)
+                        or payload["hasMore"] not in (False, True, 0, 1)):
+                    raise RuntimeError("百家号文章列表或分页结束标志缺失，不能判定采集完整")
+                items = payload["list"]
+                before_count = len(articles)
                 for row in items:
                     if not isinstance(row, dict) or row.get("itemType") != "article":
                         continue
@@ -713,8 +751,13 @@ class BaijiahaoCollector:
                     }, account))
                 has_more = bool(payload.get("hasMore"))
                 next_cursor = dig(payload, "query.ctime")
-                if not has_more or not items or not next_cursor or next_cursor == cursor:
+                if items and len(articles) == before_count:
+                    raise RuntimeError("百家号文章分页重复或没有可识别的新文章")
+                if not has_more:
                     break
+                if not items or not next_cursor or str(next_cursor) in seen_cursors:
+                    raise RuntimeError("百家号仍有下一页但列表为空或分页游标缺失、重复")
+                seen_cursors.add(str(next_cursor))
                 cursor = next_cursor
             except Exception as exc:
                 if not articles:
@@ -737,476 +780,134 @@ class BaijiahaoCollector:
         return entry, articles
 
 
-class ZhihuCollector:
-    def __init__(self, api_client, max_pages=80):
-        self.api = api_client
-        self.max_pages = max_pages
-
-    def collect(self, account):
-        token = account.get("platform_uid", "").strip()
-        if not token:
-            raise RuntimeError("缺少知乎 URL token")
-        info = unwrap_data(self.api.get(
-            "/api/v1/zhihu/web/fetch_user_info",
-            params={"user_url_token": token}, tag=f"zhihu_profile_{token}"))
-        profile_error = ""
-        if isinstance(info, dict) and isinstance(info.get("error"), dict):
-            message = info["error"].get("message") or info["error"].get("name") or "未知限制"
-            profile_error = f"用户资料接口受限：{message}"
-            info = {}
-        elif not isinstance(info, dict) or not info.get("name"):
-            profile_error = "用户资料接口响应无效"
-            info = {}
-        elif norm_text(info.get("name")) != norm_text(account["account_name"]):
-            raise RuntimeError(
-                f"知乎身份不匹配：配置为“{account['account_name']}”，接口为“{info.get('name')}”")
-        entry = base_account(account)
-        entry.update({
-            "nickname": info.get("name") or account["account_name"],
-            "followers": to_int(info.get("follower_count")),
-            "total_articles": to_int(info.get("articles_count")),
-            "profile_url": account.get("profile_url") or f"https://www.zhihu.com/people/{token}",
-        })
-
-        articles, seen = [], set()
-        author_verified = bool(info.get("name"))
-        offset, limit = 0, 20
-        for _ in range(self.max_pages):
-            payload = unwrap_data(self.api.get(
-                "/api/v1/zhihu/web/fetch_user_articles",
-                params={"user_url_token": token, "offset": offset,
-                        "limit": limit, "sort_type": "created"},
-                tag=f"zhihu_articles_{token}_{offset}"))
-            if not isinstance(payload, dict):
-                raise RuntimeError("知乎文章列表响应无效")
-            items = payload.get("data", []) or []
-            for item in items:
-                author = item.get("author") or {}
-                author_token = str(author.get("url_token") or "")
-                author_name = author.get("name") or ""
-                if author_token and author_token != token:
-                    raise RuntimeError(
-                        f"知乎文章作者标识不匹配：配置为 {token}，文章返回 {author_token}")
-                if author_name and norm_text(author_name) != norm_text(account["account_name"]):
-                    raise RuntimeError(
-                        f"知乎文章作者不匹配：配置为“{account['account_name']}”，"
-                        f"文章返回“{author_name}”")
-                if author_name:
-                    author_verified = True
-                    entry["nickname"] = author_name
-                article_id = str(item.get("id") or "")
-                if not article_id or article_id in seen:
-                    continue
-                seen.add(article_id)
-                reaction = dig(item, "reaction.statistics", default={}) or {}
-                article = {
-                    "article_id": article_id,
-                    "title": item.get("title", ""),
-                    "cover": item.get("image_url", "") or "",
-                    "url": (item.get("url") or f"https://zhuanlan.zhihu.com/p/{article_id}").replace("http://", "https://"),
-                    "published_at": epoch_to_iso(item.get("created")),
-                    "summary": strip_html(item.get("excerpt", "")),
-                    "tags": [],
-                    "stats": {
-                        "read": None,
-                        "like": first_number(item.get("voteup_count"), reaction.get("like_count")),
-                        "comment": to_int(item.get("comment_count")),
-                        "share": None,
-                        "collect": to_int(reaction.get("favorites")),
-                    },
-                }
-                articles.append(attach_account(article, account))
-            paging = payload.get("paging", {}) or {}
-            total = to_int(paging.get("totals"))
-            if total is not None:
-                entry["total_articles"] = total
-            if paging.get("is_end") or not items:
-                break
-            offset += len(items)
-        if not author_verified:
-            raise RuntimeError(profile_error or "知乎账号身份无法核验")
-        total = entry.get("total_articles")
-        entry["total_articles"] = total if total is not None else len(articles)
-        entry["covered_articles"] = len(articles)
-        entry["coverage_note"] = f"文章接口返回 {len(articles)}/{entry['total_articles']} 篇；"
-        if len(articles) < entry["total_articles"]:
-            entry["coverage_note"] += "差额可能为不可见内容；"
-        entry["coverage_note"] += "阅读量未公开"
-        issues = []
-        if profile_error:
-            issues.append(profile_error)
-            entry["coverage_note"] += "；资料指标不可用，身份已由文章作者字段核验"
-        if len(articles) < entry["total_articles"]:
-            issues.append("公开文章接口未返回全部文章")
-        if issues:
-            entry["status"] = "partial"
-            entry["error"] = "；".join(issues)
-        return entry, articles
-
-
-class XiaohongshuCollector:
-    """TikHub 小红书 APP V2：用户资料与已发布笔记。"""
-
-    def __init__(self, api_client, max_pages=80):
-        self.api = api_client
-        self.max_pages = max(1, max_pages)
-
-    @staticmethod
-    def inner_payload(payload):
-        return unwrap_service_data(payload)
-
-    def collect(self, account):
-        user_id = (account.get("platform_uid") or "").strip()
-        if not user_id:
-            raise RuntimeError("缺少小红书内部用户 ID")
-        info = self.inner_payload(self.api.get(
-            "/api/v1/xiaohongshu/app_v2/get_user_info",
-            params={"user_id": user_id}, tag=f"xiaohongshu_profile_{user_id}"))
-        if not isinstance(info, dict) or not info.get("nickname"):
-            raise RuntimeError("小红书用户信息响应无效")
-        nickname = info.get("nickname") or ""
-        if norm_text(nickname) != norm_text(account["account_name"]):
-            raise RuntimeError(
-                f"小红书身份不匹配：配置为“{account['account_name']}”，接口为“{nickname}”")
-        provided_id = (account.get("provided_id") or "").strip()
-        api_red_id = str(info.get("red_id") or "")
-        if provided_id and api_red_id and provided_id != api_red_id:
-            raise RuntimeError(
-                f"小红书号不匹配：配置为 {provided_id}，接口为 {api_red_id}")
-
-        note_stat = info.get("note_num_stat") or {}
-        entry = base_account(account)
-        entry.update({
-            "nickname": nickname,
-            "followers": to_int(info.get("fans")),
-            "total_articles": to_int(note_stat.get("posted")),
-            "lifetime_likes": to_int(note_stat.get("liked")),
-            "lifetime_collects": to_int(note_stat.get("collected")),
-            "profile_url": account.get("profile_url")
-                           or f"https://www.xiaohongshu.com/user/profile/{user_id}",
-        })
-
-        articles, seen = [], set()
-        cursor = ""
-        has_more = False
-        page_error = ""
-        for page in range(1, self.max_pages + 1):
-            try:
-                payload = self.inner_payload(self.api.get(
-                    "/api/v1/xiaohongshu/app_v2/get_user_posted_notes",
-                    params={"user_id": user_id, "cursor": cursor},
-                    tag=f"xiaohongshu_notes_{user_id}_{page}"))
-                if not isinstance(payload, dict):
-                    raise RuntimeError("小红书笔记列表响应无效")
-                items = payload.get("notes") or []
-                for item in items:
-                    note_id = str(item.get("id") or "")
-                    if not note_id or note_id in seen:
-                        continue
-                    seen.add(note_id)
-                    images = item.get("images_list") or []
-                    cover = ""
-                    if images and isinstance(images[0], dict):
-                        cover = images[0].get("url_size_large") or images[0].get("url") or ""
-                    articles.append(attach_account({
-                        "article_id": note_id,
-                        "title": item.get("title") or item.get("display_title") or "无标题笔记",
-                        "cover": cover,
-                        "url": f"https://www.xiaohongshu.com/explore/{note_id}",
-                        "published_at": epoch_to_iso(item.get("create_time")),
-                        "summary": item.get("desc") or "",
-                        "tags": [],
-                        "stats": {
-                            # 公开响应中的 view_count 恒为 0，不能当作真实阅读量。
-                            "read": None,
-                            "like": to_int(item.get("likes")),
-                            "comment": to_int(item.get("comments_count")),
-                            "share": to_int(item.get("share_count")),
-                            "collect": to_int(item.get("collected_count")),
-                        },
-                    }, account))
-                has_more = bool(payload.get("has_more"))
-                next_cursor = str(items[-1].get("cursor") or "") if items else ""
-                if not has_more or not items or not next_cursor or next_cursor == cursor:
-                    break
-                cursor = next_cursor
-            except Exception as exc:
-                if not articles:
-                    raise
-                page_error = f"第 {page} 页采集失败：{compact_error(exc)}"
-                has_more = True
-                break
-
-        total = entry.get("total_articles")
-        entry["total_articles"] = total if total is not None else len(articles)
-        entry["covered_articles"] = len(articles)
-        entry["coverage_note"] = (
-            f"笔记接口返回 {len(articles)}/{entry['total_articles']} 篇；"
-            "阅读量不公开，互动按笔记列表口径"
-        )
-        if has_more or page_error or len(articles) < entry["total_articles"]:
-            entry["status"] = "partial"
-            entry["error"] = page_error or "公开笔记列表未覆盖主页累计发布数"
-        return entry, articles
-
-
 class SohuCollector:
     def __init__(self, public_client, max_pages=80):
         self.http = public_client
+        self.max_pages = max(1, int(max_pages))
+        self.timeout_ms = 25000
 
-    def collect(self, account):
-        uid = account.get("platform_uid", "").strip()
+    @staticmethod
+    def _state(page, uid):
+        from providers.base import identifier, number
+        state = page.evaluate("() => ({blocks:window.blockRenderData,request:window.originalRequest})")
+        if identifier(dig(state, "request.mkey.mkey")) != uid:
+            raise RuntimeError("搜狐页面媒体 ID 与配置不一致")
+        blocks = state.get("blocks") or {}
+        profiles = [b.get("param", {}).get("data", {}).get("list") for b in blocks.values()
+                    if b.get("comp", {}).get("compName") == "BriefIntroductionCard"]
+        feeds = [b.get("param", {}).get("data2") for b in blocks.values()
+                 if b.get("comp", {}).get("compName") == "FeedSlideloadAuthor"]
+        if len(profiles) != 1 or not isinstance(profiles[0], list) or len(profiles[0]) != 1 or len(feeds) != 1:
+            raise RuntimeError("搜狐账号资料或作品流未唯一定位")
+        profile, feed = profiles[0][0], feeds[0]
+        if identifier(profile.get("id")) != uid:
+            raise RuntimeError("搜狐资料中的作者 ID 与配置不一致")
+        total = number(profile.get("column_5_text"))
+        if total is None or not isinstance(feed, dict) or not isinstance(feed.get("list"), list):
+            raise RuntimeError("搜狐作品总数或首屏列表缺失")
+        recipe = feed.get("reqParam") or {}
+        if str(dig(recipe, "content.productId")) != "325" or number(dig(recipe, "content.size")) != 20 or not recipe.get("tplCompKey"):
+            raise RuntimeError("搜狐作品流分页结构发生变化")
+        return profile, feed["list"], recipe["tplCompKey"], total
+
+    @staticmethod
+    def _article(raw, account):
+        from providers.base import identifier, number
+        uid = str(account["platform_uid"])
+        url = urljoin("https://m.sohu.com", raw.get("url") or "")
+        parsed = urlparse(url)
+        match = re.fullmatch(r"/a/(\d+)_(\d+)", parsed.path)
+        if (parsed.scheme != "https" or parsed.netloc != "m.sohu.com" or not match
+                or match.group(2) != uid or identifier(raw.get("id")) != match.group(1)
+                or (raw.get("authorId") is not None and identifier(raw["authorId"]) != uid)):
+            raise RuntimeError("搜狐文章 ID 或精确作者 ID 不匹配")
+        if str(raw.get("resourceType")) != "1" or not isinstance(raw.get("title"), str):
+            raise RuntimeError("搜狐作品流出现未支持的内容类型")
+        info = {part.get("image"): part.get("text") for part in raw.get("extraInfoList", []) if isinstance(part, dict)}
+        def metric(key, suffix):
+            value = info.get(key)
+            if not isinstance(value, str) or not value.endswith(suffix):
+                return None
+            return number(value[:-len(suffix)])  # Rounded 万/亿 values are unknown, not exact counters.
+        cover = raw.get("cover") or []
+        return attach_account({"article_id": match.group(1), "title": raw["title"],
+            "cover": cover[0] if isinstance(cover, list) and cover else "",
+            "url": "https://m.sohu.com" + parsed.path,
+            "published_at": relative_time_to_iso(info.get("time") or ""),
+            "summary": raw.get("brief") or "", "tags": [], "source_author_id": uid,
+            "data_source": "sohu_public", "fetched_at": datetime.now(CN_TZ).isoformat(),
+            "stats": {"read": metric("pv", "阅读"), "comment": metric("comment", "评论"),
+                      "like": None, "share": None, "collect": None}}, account)
+
+    def _collect_page(self, page, account):
+        from providers.base import number
+        uid = str(account.get("platform_uid") or "").strip()
         url = account.get("profile_url") or f"https://m.sohu.com/media/{uid}"
-        if not uid:
-            raise RuntimeError("缺少搜狐作者 ID")
-        response = self.http.get(url, tag=f"sohu_profile_{uid}")
-        soup = BeautifulSoup(response.text, "html.parser")
+        expected_url = urlparse(url)
+        if not uid.isdigit() or expected_url.scheme != "https" or expected_url.netloc != "m.sohu.com" or expected_url.path != "/media/" + uid:
+            raise RuntimeError("搜狐主页地址与配置媒体 ID 不匹配")
+        self.http.call_count += 1
+        page.goto(url, wait_until="domcontentloaded", timeout=self.timeout_ms)
+        page.wait_for_function("Boolean(window.blockRenderData && window.originalRequest)", timeout=self.timeout_ms)
+        profile, raw_rows, block_key, total = self._state(page, uid)
         entry = base_account(account)
-        profile_stats = {}
-        for item in soup.select(".article-read-content"):
-            number_node = item.select_one(".article-read-num")
-            label_node = item.select_one(".article-read-text")
-            if number_node and label_node:
-                profile_stats[label_node.get_text(" ", strip=True)] = to_int(
-                    number_node.get_text(" ", strip=True))
-        entry.update({
-            "followers": profile_stats.get("订阅"),
-            "total_articles": profile_stats.get("内容"),
-            "lifetime_reads": profile_stats.get("阅读"),
-            "lifetime_likes": profile_stats.get("获赞"),
-        })
-
-        articles, seen = [], set()
-        for item in soup.select(".feed-item"):
-            link = item.select_one('a[href*="/a/"]')
-            title_node = item.select_one(".title")
-            if not link or not title_node:
-                continue
-            article_url = urljoin("https://m.sohu.com", link.get("href", ""))
-            id_match = re.search(r"/a/(\d+)_", article_url)
-            if not id_match or id_match.group(1) in seen:
-                continue
-            article_id = id_match.group(1)
-            seen.add(article_id)
-            image_node = item.select_one("img")
-            extra_node = item.select_one(".extra-info-list")
-            extra = extra_node.get_text(" ", strip=True).replace("\xa0", " ") if extra_node else ""
-            read_match = re.search(r"([\d,.万亿]+)\s*阅读", extra)
-            comment_match = re.search(r"([\d,.万亿]+)\s*评论", extra)
-            time_text = extra.split("·", 1)[0].strip() if extra else ""
-            article = {
-                "article_id": article_id,
-                "title": title_node.get_text(" ", strip=True),
-                "cover": ((image_node.get("data-src") or image_node.get("src") or "")
-                          if image_node else ""),
-                "url": article_url.split("?", 1)[0],
-                "published_at": relative_time_to_iso(time_text),
-                "summary": "",
-                "tags": [],
-                "stats": {
-                    "read": to_int(read_match.group(1)) if read_match else None,
-                    "like": None,
-                    "comment": to_int(comment_match.group(1)) if comment_match else None,
-                    "share": None,
-                    "collect": None,
-                },
-            }
-            articles.append(attach_account(article, account))
-        if not articles:
-            raise RuntimeError("搜狐公开主页未解析到文章")
-        total = entry.get("total_articles") or len(articles)
-        entry["total_articles"] = total
-        entry["covered_articles"] = len(articles)
-        entry["coverage_note"] = f"公开主页覆盖最近 {len(articles)} 篇，账号累计 {total} 篇"
-        if len(articles) < total:
-            entry["status"] = "partial"
-            entry["error"] = "公开主页仅稳定提供最近文章列表"
-        return entry, articles
-
-
-class WeChatMPCollector:
-    """TikHub 公众号 V2：账号搜索 + 公众号历史文章分页。"""
-
-    def __init__(self, api_client, manual_collector, max_pages=5, resolve_names=False,
-                 stats_limit=0):
-        self.api = api_client
-        self.manual = manual_collector
-        self.max_pages = max(1, max_pages)
-        self.resolve_names = resolve_names
-        self.stats_limit = max(0, stats_limit)
-
-    def resolve_username(self, account):
-        username = (account.get("platform_uid") or "").strip()
-        if username.startswith("gh_"):
-            return username
-        if not self.resolve_names:
-            return None
-        payload = unwrap_service_data(self.api.post(
-            "/api/v1/wechat_search/v2/fetch_search",
-            payload={
-                "keyword": account["account_name"],
-                "business_type": "account",
-                "sort": "default",
-                "publish_time": "all",
-                "offset": 0,
-                "raw": False,
-            },
-            timeout=45,
-            tag=f"wechat_search_{account['account_name']}",
-        ))
-        items = payload.get("items", []) if isinstance(payload, dict) else []
-        target = norm_text(account["account_name"])
-        for item in items:
-            jump = item.get("jumpInfo") or item.get("jump_info") or {}
-            nickname = jump.get("nickName") or jump.get("nick_name") or item.get("title")
-            candidate = jump.get("userName") or jump.get("user_name")
-            if candidate and candidate.startswith("gh_") and norm_text(nickname) == target:
-                return candidate
-        return None
+        entry.update({"nickname": profile.get("title"), "verified_account_id": uid, "data_source": "sohu_public",
+                      "followers": number(profile.get("column_15_text")), "lifetime_reads": number(profile.get("column_3_text")),
+                      "lifetime_likes": number(profile.get("column_16_text")), "total_articles": total})
+        rows, seen, pages = [], set(), 0
+        for index in range(self.max_pages):
+            pages += 1
+            if not isinstance(raw_rows, list) or (not raw_rows and len(seen) < total):
+                raise RuntimeError("搜狐空作品页未覆盖声明总数")
+            for raw in raw_rows:
+                row = self._article(raw, account)
+                if row["article_id"] in seen:
+                    raise RuntimeError("搜狐分页出现重复文章，停止覆盖")
+                rows.append(row); seen.add(row["article_id"])
+            if len(seen) > total:
+                raise RuntimeError("搜狐文章数量超过声明总数")
+            if len(seen) == total or index + 1 >= self.max_pages:
+                break
+            page.wait_for_function("n => document.querySelectorAll('.feed-item').length >= n", arg=len(seen), timeout=self.timeout_ms)
+            def next_response(response):
+                parsed = urlparse(response.url)
+                if parsed.netloc != "odin.sohu.com" or parsed.path != "/odin/api/blockdata":
+                    return False
+                body = response.request.post_data_json
+                resources = body.get("resourceList", []) if isinstance(body, dict) else []
+                return any(r.get("tplCompKey") == block_key and str(dig(r, "context.mkey")) == uid
+                           and number(dig(r, "content.page")) == index + 2 for r in resources)
+            # Let the page construct its own public, read-only pagination POST.
+            with page.expect_response(next_response, timeout=self.timeout_ms) as pending:
+                page.locator(".feed-item").last.scroll_into_view_if_needed(timeout=self.timeout_ms)
+                page.mouse.wheel(0, 1200)
+            response = pending.value
+            self.http.call_count += 1
+            payload = response.json()
+            if response.status != 200 or payload.get("code") != 0 or payload.get("success") is not True:
+                raise RuntimeError("搜狐公开分页未成功或要求访问验证")
+            raw_rows = dig(payload, "data." + block_key + ".list")
+        after, _, after_key, after_total = self._state(page, uid)
+        if after_key != block_key or after_total != total:
+            raise RuntimeError("搜狐账号或目录总数在分页中变化")
+        entry.update(covered_articles=len(rows), pages_collected=pages,
+                     coverage_note=f"公开作者作品流 {len(rows)}/{total} 篇，{pages} 页；阅读、评论按公开值，其他互动未知")
+        if len(rows) < total:
+            entry.update(status="partial", error=f"达到最大分页数 {self.max_pages}，仍有历史文章")
+        return entry, rows
 
     def collect(self, account):
-        username = self.resolve_username(account)
-        if not username:
-            imported_entry, imported_articles = self.manual.collect(account)
-            if imported_articles or imported_entry.get("status") != "pending":
-                return imported_entry, imported_articles
-            imported_entry["error"] = (
-                "公众号接口当前未解析到 gh_username；"
-                "请在配置中补充，或放入平台后台导出数据"
-            )
-            imported_entry["coverage_note"] = "待配置公众号 gh_username"
-            return imported_entry, []
-
-        entry = base_account(account)
-        entry["platform_uid"] = username
-        articles, seen = [], set()
-        complete_types = []
-        incomplete_types = []
-        page_errors = []
-        type_counts = {}
-        # 0=普通文章，8=图片消息；两个入口的数据互不包含。
-        for item_show_type, type_label in ((0, "普通文章"), (8, "图片消息")):
-            offset = None
-            is_end = False
-            before_count = len(articles)
-            for page in range(1, self.max_pages + 1):
-                body = {
-                    "username": username,
-                    "page_size": 20,
-                    "item_show_type": item_show_type,
-                    "raw": False,
-                }
-                if offset:
-                    body["offset"] = offset
-                try:
-                    payload = unwrap_service_data(self.api.post(
-                        "/api/v1/wechat_mp/v2/fetch_account_articles",
-                        payload=body,
-                        timeout=45,
-                        tag=f"wechat_articles_{username}_{item_show_type}_{page}",
-                    ))
-                except Exception as exc:
-                    if articles:
-                        page_errors.append(
-                            f"{type_label}第 {page} 页失败：{compact_error(exc)}")
-                        is_end = False
-                        break
-                    raise
-                if not isinstance(payload, dict):
-                    raise RuntimeError("TikHub 公众号文章列表响应无效")
-                items = payload.get("articles", []) or []
-                for item in items:
-                    message_id = str(item.get("app_msg_id") or item.get("appmsgid") or "")
-                    idx = str(item.get("idx") or "1")
-                    unique_id = f"{message_id}:{idx}:{item.get('url', '')}"
-                    if unique_id in seen:
-                        continue
-                    seen.add(unique_id)
-                    article_id = f"{message_id}-{idx}" if message_id else \
-                        hashlib.sha1(unique_id.encode("utf-8")).hexdigest()[:20]
-                    covers = item.get("covers") or []
-                    if isinstance(covers, dict):
-                        covers = list(covers.values())
-                    cover = item.get("cover") or (covers[0] if covers else "")
-                    if isinstance(cover, dict):
-                        cover = cover.get("url") or cover.get("src") or ""
-                    articles.append(attach_account({
-                        "article_id": article_id,
-                        "title": item.get("title", ""),
-                        "cover": cover or "",
-                        "url": item.get("url", "") or "",
-                        "published_at": epoch_to_iso(item.get("create_time")),
-                        "summary": strip_html(item.get("digest", "")),
-                        "tags": [type_label],
-                        "stats": {
-                            "read": None,
-                            "like": None,
-                            "comment": None,
-                            "share": None,
-                            "collect": None,
-                        },
-                    }, account))
-                is_end = bool(payload.get("is_end"))
-                next_offset = payload.get("next_offset")
-                # 上游偶尔会在空列表后仍返回游标；继续使用该游标只会产生空页。
-                if not items:
-                    is_end = True
-                if is_end or not next_offset or not items or next_offset == offset:
-                    break
-                offset = next_offset
-            type_counts[type_label] = len(articles) - before_count
-            (complete_types if is_end else incomplete_types).append(type_label)
-
-        entry["total_articles"] = len(articles)
-        entry["covered_articles"] = len(articles)
-        enriched = 0
-        stats_errors = 0
-        if self.stats_limit:
-            latest = sorted(
-                [item for item in articles if item.get("url")],
-                key=lambda item: item.get("published_at") or "",
-                reverse=True,
-            )[:self.stats_limit]
-            for article in latest:
-                try:
-                    stats = unwrap_service_data(self.api.post(
-                        "/api/v1/wechat_mp/v2/fetch_article_stats",
-                        payload={"url": article["url"], "raw": False},
-                        timeout=45,
-                        tag=f"wechat_stats_{username}",
-                    ))
-                    if isinstance(stats, dict):
-                        article["stats"].update({
-                            "read": to_int(stats.get("read_num")),
-                            "like": to_int(stats.get("like_count")),
-                            "comment": to_int(stats.get("comment_count")),
-                            "share": to_int(stats.get("share_count")),
-                            "collect": to_int(stats.get("collect_count")),
-                        })
-                        enriched += 1
-                except Exception:
-                    stats_errors += 1
-        entry["stats_enriched_articles"] = enriched
-        entry["coverage_note"] = (
-            f"公众号接口采集 {len(articles)} 篇（普通文章 {type_counts.get('普通文章', 0)}、"
-            f"图片消息 {type_counts.get('图片消息', 0)}）；互动指标补全 {enriched} 篇"
-        )
-        if incomplete_types:
-            entry["status"] = "partial"
-            entry["error"] = (
-                f"为控制 API 额度，{('、'.join(incomplete_types))}最多采集 "
-                f"{self.max_pages} 页")
-            entry["coverage_note"] += "，仍有历史分页"
-        if page_errors:
-            entry["status"] = "partial"
-            entry["error"] = (entry.get("error") + "；" if entry.get("error") else "") + \
-                             "；".join(page_errors)
-            entry["coverage_note"] += "，后续分页失败"
-        if stats_errors:
-            entry["status"] = "partial"
-            entry["error"] = (entry.get("error") + "；" if entry.get("error") else "") + \
-                             f"{stats_errors} 篇互动指标补全失败"
-        return entry, articles
+        from playwright.sync_api import sync_playwright
+        with sync_playwright() as driver:
+            try:
+                browser = driver.chromium.launch(channel="chrome", headless=True)
+            except Exception:
+                browser = driver.chromium.launch(channel="chromium", headless=True)
+            try:
+                context = browser.new_context(viewport={"width": 1280, "height": 950}, locale="zh-CN")
+                return self._collect_page(context.new_page(), account)
+            finally:
+                browser.close()
 
 
 class ToutiaoCollector:
@@ -1344,16 +1045,23 @@ class ToutiaoCollector:
             self._playwright = None
 
     @staticmethod
+    def _exact_count(value):
+        if isinstance(value, bool) or not isinstance(value, (int, str)):
+            return None
+        text = str(value).strip().replace(",", "")
+        return int(text) if re.fullmatch(r"\d+", text) else None
+
+    @staticmethod
     def _profile_metrics(page):
         metrics = {}
         for text in page.locator(".relation-stat .stat-item").all_inner_texts():
             compact = re.sub(r"\s+", "", text)
             if "获赞" in compact:
-                metrics["lifetime_likes"] = to_int(compact)
+                metrics["lifetime_likes"] = ToutiaoCollector._exact_count(compact.replace("获赞", ""))
             elif "粉丝" in compact:
-                metrics["followers"] = to_int(compact)
+                metrics["followers"] = ToutiaoCollector._exact_count(compact.replace("粉丝", ""))
             elif "关注" in compact:
-                metrics["following"] = to_int(compact)
+                metrics["following"] = ToutiaoCollector._exact_count(compact.replace("关注", ""))
         return metrics
 
     @staticmethod
@@ -1368,15 +1076,30 @@ class ToutiaoCollector:
 
     @staticmethod
     def _article_from_item(item, account):
-        article_id = str(item.get("group_id") or item.get("item_id") or item.get("id") or "")
+        from providers.base import identifier
+        uid = str(account.get("platform_uid") or "")
+        media_id = str(account.get("expected_media_id") or uid)
+        author = dig(item, "itemCell.userInfo", default={})
+        if (not uid or not media_id.isdigit() or not isinstance(author, dict)
+                or identifier(author.get("userID")) != uid
+                or identifier(author.get("mediaID")) != media_id):
+            raise RuntimeError("今日头条文章精确作者 ID 与配置不符")
+        article_id = identifier(item.get("group_id") or item.get("item_id") or item.get("id"))
         if not article_id:
-            return None
-        title = (item.get("title") or item.get("feed_title") or "").strip()
-        # “全部”流可能混入只有正文、没有标题的微头条；图文大屏只保留文章。
-        if not title:
-            return None
+            raise RuntimeError("今日头条文章缺少稳定 ID")
+        nested_id = identifier(dig(item, "itemCell.articleBase.gidStr"))
+        if not article_id.isdigit() or nested_id != article_id:
+            raise RuntimeError("今日头条两组文章 ID 不一致")
+        title = item.get("title") or item.get("feed_title") or ""
+        if not isinstance(title, str) or not title.strip():
+            raise RuntimeError("今日头条文章分类返回无标题记录，不能静默跳过")
+        title = title.strip()
         counters = dig(item, "itemCell.itemCounter", default={}) or {}
         forward_info = item.get("forward_info") or {}
+        def exact_metric(*values):
+            known = [ToutiaoCollector._exact_count(value) for value in values]
+            known = [value for value in known if value is not None]
+            return max(known) if known else None
         url = (item.get("article_url") or item.get("display_url")
                or item.get("url") or item.get("share_url") or "")
         if url.startswith("//"):
@@ -1391,15 +1114,19 @@ class ToutiaoCollector:
             "published_at": epoch_to_iso(item.get("publish_time") or item.get("behot_time")),
             "summary": strip_html(item.get("abstract") or item.get("content") or ""),
             "tags": [],
+            "source_author_id": uid,
+            "source_media_id": media_id,
+            "data_source": "toutiao_public",
+            "fetched_at": datetime.now(CN_TZ).isoformat(),
             "stats": {
-                "read": first_number(counters.get("readCount"), item.get("read_count")),
-                "like": first_number(counters.get("diggCount"), item.get("digg_count"),
+                "read": exact_metric(counters.get("readCount"), item.get("read_count")),
+                "like": exact_metric(counters.get("diggCount"), item.get("digg_count"),
                                      item.get("like_count")),
-                "comment": first_number(counters.get("commentCount"),
+                "comment": exact_metric(counters.get("commentCount"),
                                         item.get("comment_count")),
-                "share": first_number(counters.get("shareCount"), item.get("share_count"),
+                "share": exact_metric(counters.get("shareCount"), item.get("share_count"),
                                       forward_info.get("forward_count")),
-                "collect": first_number(counters.get("repinCount"), item.get("repin_count")),
+                "collect": exact_metric(counters.get("repinCount"), item.get("repin_count")),
             },
         }
         return attach_account(article, account)
@@ -1436,8 +1163,12 @@ class ToutiaoCollector:
         page = self._context.new_page()
         entry = base_account(account)
         profile_url = account.get("profile_url") or f"https://www.toutiao.com/c/user/{uid}/"
+        parsed_profile = urlparse(profile_url)
+        if parsed_profile.scheme != "https" or parsed_profile.netloc != "www.toutiao.com" or parsed_profile.path != f"/c/user/{uid}/":
+            raise RuntimeError("今日头条作者页地址与配置 ID 不一致")
         entry["profile_url"] = profile_url
         articles, seen = [], set()
+        cursors = set()
         has_more = False
         page_error = ""
         page_count = 0
@@ -1485,6 +1216,17 @@ class ToutiaoCollector:
                 except Exception as exc:
                     raise RuntimeError(
                         f"今日头条未能切换到文章列表：{compact_error(exc)}") from exc
+            else:
+                raise RuntimeError("今日头条缺少文章分类入口，不能把全部内容流当文章")
+
+            # The site normally replaces /c/user/<numeric-id>/ with an opaque
+            # /c/user/token/.../ route. Bind this observed route to the exact
+            # numeric userID/mediaID verified on every returned article.
+            observed_profile = urlparse(page.url)
+            if (observed_profile.scheme != "https" or observed_profile.netloc != "www.toutiao.com"
+                    or not (observed_profile.path == f"/c/user/{uid}/"
+                            or re.fullmatch(r"/c/user/token/[^/]+/", observed_profile.path))):
+                raise RuntimeError("今日头条页面不是受支持的公开作者页")
 
             while response is not None and page_count < self.max_pages:
                 self.request_count += 1
@@ -1494,23 +1236,37 @@ class ToutiaoCollector:
                 except Exception as exc:
                     raise RuntimeError("今日头条文章接口未返回有效 JSON") from exc
                 self._save_debug(uid, page_count, payload)
+                category = dict(parse_qsl(urlparse(response.url).query)).get("category")
+                if response.status != 200 or category != "pc_profile_article":
+                    raise RuntimeError("今日头条响应不是已核验的公开文章列表")
                 if not isinstance(payload, dict) or payload.get("message") != "success":
                     decision = payload.get("decision") if isinstance(payload, dict) else None
                     if decision:
                         raise RuntimeError("今日头条触发访问校验，请稍后重试或使用 --toutiao-headed")
                     raise RuntimeError(
                         f"今日头条文章接口异常：{compact_error(payload.get('message', payload))}")
-                for item in payload.get("data") or []:
+                raw_rows, more = payload.get("data"), payload.get("has_more")
+                if not isinstance(raw_rows, list) or type(more) not in (bool, int) or more not in (0, 1):
+                    raise RuntimeError("今日头条文章列表或分页结束标记缺失")
+                before = len(seen)
+                for item in raw_rows:
                     if not isinstance(item, dict):
-                        continue
+                        raise RuntimeError("今日头条文章记录格式改变")
                     article = self._article_from_item(item, account)
                     if not article or article["article_id"] in seen:
                         continue
                     seen.add(article["article_id"])
                     articles.append(article)
-                has_more = bool(payload.get("has_more"))
+                if raw_rows and len(seen) == before:
+                    raise RuntimeError("今日头条分页没有新增文章，不能视为完整")
+                has_more = bool(more)
                 if not has_more:
                     break
+                from providers.base import identifier
+                cursor = identifier(dig(payload, "next.max_behot_time"))
+                if not raw_rows or not cursor.isdigit() or cursor in cursors:
+                    raise RuntimeError("今日头条分页游标缺失、重复或空页仍声明更多")
+                cursors.add(cursor)
                 if page_count >= self.max_pages:
                     break
                 try:
@@ -1522,6 +1278,12 @@ class ToutiaoCollector:
 
             if not articles:
                 raise RuntimeError("今日头条公开作者页未返回文章")
+            final_profile = urlparse(page.url)
+            if (final_profile.scheme != observed_profile.scheme or final_profile.netloc != observed_profile.netloc
+                    or final_profile.path != observed_profile.path):
+                raise RuntimeError("今日头条作者页身份在采集期间发生变化")
+            entry["verified_account_id"] = uid
+            entry["data_source"] = "toutiao_public"
             entry["covered_articles"] = len(articles)
             entry["listed_articles"] = len(articles)
             entry["pages_collected"] = page_count
@@ -1607,13 +1369,41 @@ def load_previous(path):
         return {"accounts": [], "articles": []}
 
 
+class ProviderArticleCollector:
+    def __init__(self, registry, max_pages):
+        self.registry, self.max_pages = registry, max_pages
+
+    def collect(self, account):
+        key = account_key(account)
+        settings = self.registry.config.get("accounts", {}).get(key, {})
+        try:
+            result = self.registry.get(account).collect(max_pages=self.max_pages)
+            # Partial results still enter the cache merge. Reject unverified
+            # identities before either complete or partial records are admitted.
+            verified = result.profile.get("verified_account_id")
+            if not isinstance(verified, str) or not verified.strip():
+                from providers.base import ProviderError
+                raise ProviderError("identity_mismatch", "授权文章数据源未核验目标账号，保留原快照")
+            record_verification(key, settings, result)
+        except Exception as error:
+            record_verification(key, settings, error=error)
+            raise
+        entry = base_account(account)
+        entry.update(result.profile)
+        entry.update({"total_articles": result.profile.get("total"),
+                      "covered_articles": len(result.records), "data_source": result.source,
+                      "status": "ok" if result.complete else "partial",
+                      "error": "" if result.complete else result.note,
+                      "coverage_note": result.note or "已完成配置范围内的后台分页"})
+        return entry, [attach_account(row, account) for row in result.records]
+
+
 def collect(args):
     config = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     previous = load_previous(Path(args.out))
     run_at = datetime.now(CN_TZ).isoformat()
     public_client = HttpClient(debug=args.debug, min_interval=args.public_interval)
-    api_client = TikHubClient(os.environ.get("TIKHUB_API_KEY", "").strip(),
-                              debug=args.debug, min_interval=args.interval)
+    api_client = ProviderRegistry()
     manual = ManualCollector(args.manual_input)
     toutiao = ToutiaoCollector(
         args.toutiao_pages,
@@ -1624,13 +1414,11 @@ def collect(args):
     collectors = {
         "csdn": CsdnCollector(public_client, args.max_pages),
         "elecfans": ElecfansCollector(public_client, args.max_pages),
-        "baijiahao": BaijiahaoCollector(public_client, args.max_pages),
-        "zhihu": ZhihuCollector(api_client, args.max_pages),
+        "baijiahao": ProviderArticleCollector(api_client, args.max_pages),
+        "zhihu": ProviderArticleCollector(api_client, args.max_pages),
         "sohu": SohuCollector(public_client, args.max_pages),
-        "xiaohongshu": XiaohongshuCollector(api_client, args.max_pages),
-        "wechat_mp": WeChatMPCollector(api_client, manual,
-                                        args.wechat_pages, args.resolve_wechat,
-                                        args.wechat_stats_limit),
+        "xiaohongshu": ProviderArticleCollector(api_client, args.max_pages),
+        "wechat_mp": ProviderArticleCollector(api_client, args.wechat_pages),
         "toutiao": toutiao,
         "manual": manual,
     }
@@ -1684,12 +1472,31 @@ def collect(args):
                     raise RuntimeError(
                         f"本次仅返回 {len(articles)} 篇，较上次 {len(cached_articles)} 篇异常下降；"
                         "为避免不完整响应覆盖历史快照，已中止替换")
+                if account["platform"] in PUBLIC_ARTICLE_PLATFORMS:
+                    record_public_article_verification(account, entry, articles)
+                    articles = annotate_public_articles(account, articles)
+                articles = retain_known(articles, cached_articles, "article_id")
                 articles = [{**article, "snapshot_state": "current"} for article in articles]
                 restored = 0
-                if (entry.get("status") == "partial" and cached_articles
-                        and len(articles) < len(cached_articles)):
+                if entry.get("status") == "partial" and cached_articles:
+                    merge_cache = cached_articles
+                    if (account["platform"] in {"wechat_service", "wechat_subscription"}
+                            and entry.get("data_source") == "wechat_browser"
+                            and entry.get("account_key") == key
+                            and entry.get("verified_account_id") == account.get("platform_uid")
+                            and account.get("platform_uid")):
+                        excluded_ids = {
+                            str(row["article_id"]) for row in entry.get("excluded_contents", [])
+                            if isinstance(row, dict) and row.get("article_id")
+                            and row.get("account_key", key) == key
+                            and row.get("reason") in {"deleted", "standalone_channels_video"}
+                        }
+                        # These rows were actually inspected and excluded. Keep
+                        # unseen history, and retain the original cache for errors.
+                        merge_cache = [row for row in cached_articles
+                                       if str(row.get("article_id")) not in excluded_ids]
                     articles, restored = merge_records(
-                        articles, cached_articles, "article_id")
+                        articles, merge_cache, "article_id")
                     entry["covered_articles"] = len(articles)
                     if entry.get("total_articles") is not None:
                         entry["total_articles"] = max(entry["total_articles"], len(articles))
@@ -1703,6 +1510,8 @@ def collect(args):
                 result["articles"].extend(articles)
                 print(f"    状态: {entry['status']}，文章: {len(articles)}")
             except Exception as exc:
+                if account["platform"] in PUBLIC_ARTICLE_PLATFORMS:
+                    record_public_article_verification(account, error=exc)
                 message = compact_error(exc)
                 entry = base_account(account)
                 entry["last_attempt_at"] = run_at
@@ -1727,8 +1536,14 @@ def collect(args):
                     entry["error"] = message
                     entry["coverage_note"] = "采集失败"
                 print(f"    [警告] {entry['error']}", file=sys.stderr)
+            finally:
+                # Playwright's synchronous driver owns an event loop in this
+                # thread. Release it before the next account starts its own
+                # browser, including when this Toutiao account failed.
+                if account.get("collector") == "toutiao":
+                    toutiao.close()
             entry["request_counts"] = {
-                "api": api_client.call_count - api_before,
+                "provider": api_client.call_count - api_before,
                 "public": public_client.call_count - public_before,
                 "browser": toutiao.request_count - browser_before,
             }
@@ -1742,7 +1557,8 @@ def collect(args):
             result["accounts"].append(entry)
     finally:
         toutiao.close()
-    result["api_calls"] = api_client.call_count
+    result["provider_requests"] = api_client.call_count
+    result["api_calls"] = 0
     result["public_requests"] = public_client.call_count
     result["browser_requests"] = toutiao.request_count
     for status in ("ok", "partial", "pending", "stale", "error"):
@@ -1756,7 +1572,7 @@ def collect(args):
     result["latest_success_at"] = max(success_times) if success_times else None
     finalize_snapshot(result, "article")
     print(f"完成：{len(result['articles'])} 篇，公开请求 {public_client.call_count} 次，"
-          f"浏览器文章请求 {toutiao.request_count} 次，API 请求 {api_client.call_count} 次")
+          f"浏览器文章请求 {toutiao.request_count} 次，平台直采请求 {api_client.call_count} 次")
     return result
 
 
@@ -1818,8 +1634,10 @@ def make_mock():
     }
 
 
-def write_outputs(data, out_path):
+def write_outputs(data, out_path, publish_web=True):
     atomic_write_json(out_path, data, pretty=True)
+    if not publish_web:
+        return
     atomic_write_json(WEB_JSON_PATH, data)
     atomic_write_text(
         WEB_JS_PATH,
@@ -1835,20 +1653,21 @@ def main():
     parser.add_argument("--interval", type=float, default=0.6, help="API 请求最小间隔秒数")
     parser.add_argument("--public-interval", type=float, default=0.15,
                         help="公开页面请求最小间隔秒数")
-    parser.add_argument("--max-pages", type=int, default=80, help="单账号最大翻页数")
-    parser.add_argument("--wechat-pages", type=int, default=80,
-                        help="每个公众号每种内容最多采集页数，每页最多 20 条（默认 80）")
+    parser.add_argument("--max-pages", type=int, default=500, help="单账号最大翻页数（默认500，仍受每日采集额度限制）")
+    parser.add_argument("--wechat-pages", type=int, default=500,
+                        help="每个公众号最多分页数；后台每页10组，官方接口每页最多20组（默认200）")
     parser.add_argument("--resolve-wechat", action="store_true",
-                        help="通过 TikHub 搜索缺少 gh_username 的公众号（会产生计费请求）")
+                        help="兼容旧参数；账号身份改由登录资料核验，不再搜索")
     parser.add_argument("--wechat-stats-limit", type=int, default=0,
-                        help="每个公众号补全最新 N 篇互动指标；每篇会产生一次计费请求（默认 0）")
-    parser.add_argument("--toutiao-pages", type=int, default=20,
-                        help="每个今日头条账号最多采集页数，每页通常 20 篇（默认 20）")
+                        help="每个公众号补全最新 N 篇互动指标；兼容旧参数；指标由 provider 采集（默认 0）")
+    parser.add_argument("--toutiao-pages", type=int, default=200,
+                        help="每个今日头条账号最多采集页数，每页通常 20 篇（默认200）")
     parser.add_argument("--toutiao-timeout", type=float, default=30,
                         help="今日头条页面及分页等待超时秒数（默认 30）")
     parser.add_argument("--toutiao-headed", action="store_true",
                         help="显示今日头条采集浏览器，用于验证码或访问校验排查")
     parser.add_argument("--manual-input", default=str(MANUAL_PATH), help="人工导入 JSON 路径")
+    parser.add_argument("--no-publish-web", action="store_true")
     parser.add_argument("--out", default=str(OUT_PATH), help="主输出 JSON 路径")
     parser.add_argument(
         "--only", action="append",
@@ -1856,7 +1675,11 @@ def main():
     args = parser.parse_args()
     load_dotenv()
     data = finalize_snapshot(make_mock(), "article") if args.mock else collect(args)
-    write_outputs(data, Path(args.out))
+    write_outputs(data, Path(args.out), not args.no_publish_web)
+    if not args.mock and any(a.get("refreshed_in_run") is not False and a.get("status") != "ok"
+                             or a.get("last_attempt_at") == data.get("updated_at") and a.get("status") != "ok"
+                             for a in data.get("accounts", [])):
+        raise SystemExit(2)
 
 
 if __name__ == "__main__":

@@ -31,17 +31,103 @@ services:
       DATA_COLLECTION_HOUR: "8"
       SCHEDULER_POLL_SECONDS: "20"
       VIDEO_FETCH_ARGS: "${VIDEO_FETCH_ARGS:---no-enrich-bili}"
-      ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:---wechat-pages 5}"
-      COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 10 --max-age-days 90 --max-pages 20}"
-      TIKHUB_DAILY_CALL_LIMIT: "${TIKHUB_DAILY_CALL_LIMIT:-800}"
+      ARTICLE_FETCH_ARGS: "${ARTICLE_FETCH_ARGS:---wechat-pages 200 --max-pages 200 --toutiao-pages 200}"
+      COMMENT_MONITOR_ARGS: "${COMMENT_MONITOR_ARGS:---limit 0 --max-age-days 90 --max-pages 200}"
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers/providers.json
+      PROMOTION_SESSION_DIR: /app/data/sessions
     volumes:
       - ./data:/app/data
       - ./web/data:/app/web/data
       - ./web/articles/data:/app/web/articles/data
       - ./web/comments/data:/app/web/comments/data
       - ./config:/app/config:ro
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /run/promotion/providers
+        read_only: true
+        bind:
+          create_host_path: false
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/app/data/sessions
     shm_size: "1gb"
     init: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  # Explicitly opt in with: docker compose --profile login up -d login
+  # Build dependencies do not start the scheduler.
+  # Optional read-only video-channel session renewal; never starts the mail sender.
+  session-maintenance:
+    profiles: [session-maintenance]
+    image: promotion-dashboard-scheduler:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    command: [python, pipeline/session_maintenance.py]
+    environment:
+      TZ: Asia/Shanghai
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers/providers.json
+      PROMOTION_SESSION_DIR: /app/data/sessions
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+    volumes:
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /run/promotion/providers
+        read_only: true
+        bind:
+          create_host_path: false
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/app/data/sessions
+    shm_size: "1gb"
+    init: true
+    security_opt:
+      - no-new-privileges:true
+    restart: unless-stopped
+
+  login:
+    profiles: [login]
+    image: promotion-dashboard-login:latest
+    build:
+      context: .
+      dockerfile: Dockerfile.login
+      additional_contexts:
+        collector: service:scheduler
+    ports:
+      - "${PROMOTION_LOGIN_BIND:-127.0.0.1}:${PROMOTION_LOGIN_PORT:-18762}:18762"
+    environment:
+      TZ: Asia/Shanghai
+      DISPLAY: :99
+      PROMOTION_LOGIN_MODE: remote
+      PROMOTION_AUTHORIZATION_TTL_SECONDS: ${PROMOTION_AUTHORIZATION_TTL_SECONDS:-1800}
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_BROWSER_CHANNEL: chromium
+      PROMOTION_PANEL_ORIGIN: ${PROMOTION_PANEL_ORIGIN:-http://127.0.0.1:18762}
+      PROMOTION_PANEL_ALLOWED_ORIGINS: ${PROMOTION_PANEL_ALLOWED_ORIGINS:-}
+      PROMOTION_AUTH_FILE: /run/promotion/authorization/admin.htpasswd
+      PROMOTION_RUNTIME_DIR: /app/.runtime
+      PROMOTION_DATA_DIR: /app/data
+      PROMOTION_SESSION_DIR: /app/data/sessions
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers/providers.json
+    volumes:
+      - ./data:/app/data
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/app/data/sessions
+      - ${PROMOTION_LOGIN_RUNTIME_DIR:-./.runtime/login-runtime}:/app/.runtime
+      - ./config:/app/config:ro
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /run/promotion/providers
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PROMOTION_AUTH_DIR:-./.runtime/authorization}
+        target: /run/promotion/authorization
+        read_only: true
+        bind:
+          create_host_path: false
+    init: true
+    shm_size: "1gb"
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped

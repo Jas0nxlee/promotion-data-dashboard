@@ -27,8 +27,8 @@
       "platform": "wechat_channels",
       "business_line": "望获",
       "account_name": "望获OS",
-      "platform_uid": "sphloce8CzWkHZx",
-      "note": "已提供并配置视频号 sph 短号",
+      "platform_uid": "sphIoce8CzWkHZx",
+      "note": "已通过视频号助手登录核验，短号第4位为大写I；历史配置误作小写l",
       "owner": "李林蔚",
       "content_type": "视频"
     },
@@ -52,8 +52,8 @@
       "platform": "douyin",
       "business_line": "芯片",
       "account_name": "安芯Max",
-      "platform_uid": "mmmmmax_lllllfy",
-      "note": "已核验的账号ID；固定ID可避免同名搜索误匹配"
+      "platform_uid": "54167658321",
+      "note": "2026-09-15用户确认以当前授权登录的安芯Max为准；旧配置mmmmmax_lllllfy及旧32条作品另行归档，内部用户ID3408917686129448"
     }
   ]
 }

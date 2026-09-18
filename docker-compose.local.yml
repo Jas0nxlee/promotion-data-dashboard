@@ -1,0 +1,109 @@
+# Standalone local profile. Never combine with docker-compose.yml.
+name: ${PROMOTION_DEV_ID:?Set a unique PROMOTION_DEV_ID for this worktree}
+services:
+  frontend:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+    ports:
+      - "127.0.0.1:${PROMOTION_DEV_PORT:-18081}:8080"
+    volumes:
+      - ./web:/www:ro
+      - ./.runtime/local/web/data:/www/data:ro
+      - ./.runtime/local/web/articles/data:/www/articles/data:ro
+      - ./.runtime/local/web/comments/data:/www/comments/data:ro
+    read_only: true
+    tmpfs: [/tmp]
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    environment:
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_TEST_MODE: "1"
+      PROMOTION_RUNTIME_DIR: /isolated
+      PROMOTION_DATA_DIR: /app/data
+      PROMOTION_SESSION_DIR: /sessions
+      PROMOTION_PROVIDER_CONFIG: /config-private/providers.json
+    volumes:
+      - ./.runtime/local:/isolated
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/sessions
+      - ./.runtime/local/data:/app/data
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /config-private
+        read_only: true
+        bind:
+          create_host_path: false
+    # An explicit one-shot invocation is required; no scheduler or email service.
+    command: [python, pipeline/provider_setup.py, status]
+    init: true
+    shm_size: 1gb
+  session-maintenance:
+    profiles: [session-maintenance]
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    command: [python, pipeline/session_maintenance.py]
+    environment:
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_TEST_MODE: "1"
+      PROMOTION_RUNTIME_DIR: /isolated
+      PROMOTION_DATA_DIR: /app/data
+      PROMOTION_SESSION_DIR: /sessions
+      PROMOTION_PROVIDER_CONFIG: /config-private/providers.json
+    volumes:
+      - ./.runtime/local:/isolated
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/sessions
+      - ./.runtime/local/data:/app/data
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /config-private
+        read_only: true
+        bind:
+          create_host_path: false
+    init: true
+    shm_size: 1gb
+  login:
+    profiles: [login]
+    build:
+      context: .
+      dockerfile: Dockerfile.login
+      additional_contexts:
+        collector: service:collector
+    ports:
+      - "${PROMOTION_LOGIN_BIND:-127.0.0.1}:${PROMOTION_LOGIN_PORT:-18762}:18762"
+    environment:
+      PROMOTION_TEST_MODE: "1"
+      PROMOTION_LOGIN_MODE: remote
+      PROMOTION_AUTHORIZATION_TTL_SECONDS: ${PROMOTION_AUTHORIZATION_TTL_SECONDS:-1800}
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_BROWSER_CHANNEL: chromium
+      PROMOTION_PANEL_ORIGIN: ${PROMOTION_PANEL_ORIGIN:-http://127.0.0.1:18762}
+      PROMOTION_PANEL_ALLOWED_ORIGINS: ${PROMOTION_PANEL_ALLOWED_ORIGINS:-}
+      PROMOTION_AUTH_FILE: /run/promotion/authorization/admin.htpasswd
+      PROMOTION_RUNTIME_DIR: /app/.runtime
+      PROMOTION_DATA_DIR: /app/data
+      PROMOTION_SESSION_DIR: /app/data/sessions
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers/providers.json
+      DISPLAY: :99
+    volumes:
+      - ./.runtime/local/data:/app/data
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/app/data/sessions
+      - ${PROMOTION_LOGIN_RUNTIME_DIR:-./.runtime/local/login-runtime}:/app/.runtime
+      - ./config:/app/config:ro
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /run/promotion/providers
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${PROMOTION_AUTH_DIR:-./.runtime/authorization}
+        target: /run/promotion/authorization
+        read_only: true
+        bind:
+          create_host_path: false
+    init: true
+    shm_size: 1gb
+    security_opt:
+      - no-new-privileges:true

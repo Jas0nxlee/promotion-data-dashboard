@@ -10,6 +10,7 @@ from snapshot_utils import finalize_snapshot
 from comment_timeline import build_public_snapshot, load_timeline
 
 
+from runtime import DATA, WEB
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -86,11 +87,11 @@ def check_timeline(private_path: Path, public_path: Path) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(description="校验视频、图文与评论时间线快照")
-    parser.add_argument("--video", default=str(ROOT / "data" / "dashboard_data.json"))
-    parser.add_argument("--article", default=str(ROOT / "data" / "article_dashboard_data.json"))
-    parser.add_argument("--timeline", default=str(ROOT / "data" / "comment_timeline.json"))
+    parser.add_argument("--video", default=str(DATA / "dashboard_data.json"))
+    parser.add_argument("--article", default=str(DATA / "article_dashboard_data.json"))
+    parser.add_argument("--timeline", default=str(DATA / "comment_timeline.json"))
     parser.add_argument("--timeline-public", default=str(
-        ROOT / "web" / "comments" / "data" / "comment_timeline.json"))
+        WEB / "comments" / "data" / "comment_timeline.json"))
     args = parser.parse_args()
     failures = []
     for path, kind in ((Path(args.video), "video"), (Path(args.article), "article")):

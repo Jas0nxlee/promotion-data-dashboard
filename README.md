@@ -2,11 +2,12 @@
 
 面向多平台推广账号的数据采集、质量检查、可视化和评论提醒项目。
 
-项目包含三套静态大屏：
+当前分支正在迁移和补齐平台直采。原先9／14账号的结果仅覆盖TikHub替换范围；整个项目实际包含24账号，其中图文17账号、8类平台。公开图文采集器的验收现已单独补齐，当前缺口见 [图文验收清单](docs/ARTICLE_PLATFORM_STATUS.md)。尚未进行生产部署和七天观察。开发测试请使用 [本地隔离开发说明](docs/LOCAL_DEVELOPMENT.md)，不要直接运行下方生产 Compose。
+
+项目包含两套静态大屏：
 
 - 视频推广数据大屏：B站、抖音、视频号。
 - 图文推广数据大屏：CSDN、电子发烧友、百家号、知乎、微信公众号、今日头条、搜狐、小红书。
-- 评论互动时间线：上线后新增评论、官方回复、响应耗时和 API 用量。
 
 后端不是常驻 Web API，而是一组按计划运行的 Python 采集任务。采集结果写入 JSON 快照，前端由原生 JavaScript 和 ECharts 直接读取。
 
@@ -16,8 +17,7 @@
 - 视频与图文大屏切换、筛选、趋势、排行、账号对比和明细查看。
 - 数据去重、指标覆盖率、采集状态和新鲜度展示。
 - 单账号失败保留最近成功快照，防止线上数据被临时空响应覆盖。
-- B站、抖音、小红书、视频号分层评论监测与条件官方回复检测。
-- TikHub 跨采集器每日硬上限、分任务记账和近 35 天用量趋势。
+- 四平台评论及二级回复分页框架；B站和抖音各2个账号、视频号2个账号、小红书1个账号已验证；无回复的样本单独标明，其余账号仍待接入。
 - 其他平台评论数量增长提醒。
 - SMTP 邮件队列、失败重试和按平台配置收件人。
 - Docker 部署及北京时间定时调度。
@@ -25,7 +25,7 @@
 ## 运行架构
 
 ```text
-TikHub / 公开网页 / 今日头条浏览器采集 / 人工导入
+授权平台 provider / 公开网页 / 今日头条浏览器采集 / 人工导入
                          │
                          ▼
        fetch_data.py / fetch_article_data.py
@@ -45,7 +45,7 @@ Docker Compose 包含两个服务：
 
 - `frontend`：BusyBox `httpd`，只读提供静态页面，默认端口 `8080`。
 - `scheduler`：Python 采集、评论监测、SMTP 发送和定时调度。
-- 三套大屏均可一键导出当前筛选及搜索结果，生成 Excel 可直接打开的 UTF-8 CSV。
+- 视频和图文大屏均可一键导出当前筛选及搜索结果，生成 Excel 可直接打开的 UTF-8 CSV。
 
 ## 目录结构
 
@@ -57,16 +57,13 @@ Docker Compose 包含两个服务：
 │   ├── fetch_data.py               # 视频数据采集
 │   ├── fetch_article_data.py       # 图文数据采集
 │   ├── comment_monitor.py          # 评论发现、分页、增量判断和入队
-│   ├── comment_timeline.py         # 上线后评论/官方回复时间线
-│   ├── api_budget.py              # TikHub 每日调用预算
 │   ├── send_comment_alerts.py      # SMTP 待发队列发送
 │   ├── scheduler.py                # 北京时间调度器
 │   ├── snapshot_utils.py           # 快照合并、质量摘要和原子写入
 │   └── validate_snapshots.py       # 快照校验
 ├── tests/                          # 分页、基线、邮件和调度测试
 ├── web/                            # 静态视频大屏
-│   ├── articles/                   # 静态图文大屏
-│   └── comments/                   # 评论与官方回复时间线
+│   └── articles/                   # 静态图文大屏
 ├── docker-compose.yml
 ├── Dockerfile.frontend
 ├── Dockerfile.collector
@@ -83,12 +80,9 @@ cp .env.example .env
 chmod 600 .env
 ```
 
-至少需要配置 TikHub 和 SMTP：
+首先按照本地开发说明配置已核验的账号 provider 与独立会话。只有正式启用邮件时需要 SMTP：
 
 ```env
-TIKHUB_API_KEY=你的令牌
-TIKHUB_BASE_URL=https://api.tikhub.io
-
 SMTP_HOST=smtp.example.com
 SMTP_PORT=587
 SMTP_USERNAME=发件账号
@@ -129,7 +123,19 @@ COMMENT_RECIPIENT_CSDN=disabled
 COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"},"douyin":"b@example.com"}
 ```
 
-### 3. 构建并启动
+### 3. 初始化 Docker 授权
+
+先在交互终端初始化管理员密码与配置目录。存在本机旧配置时显式迁移，原文件保持不变：
+
+```bash
+python3 scripts/init_authorization.py --migrate-provider-file .runtime/providers.json
+docker compose --profile login build login
+docker compose --profile login up -d --no-deps login
+```
+
+新安装没有旧配置时省略迁移参数。在 `http://127.0.0.1:18762/` 登录管理页面，选择账号扫码，点击“验证并保存”；只有身份、会话恢复及采集验证通过才会替换正式会话。远程服务器可通过SSH转发访问。公开采集账号无需扫码。详见 [Docker授权与重新授权说明](docs/DOCKER_AUTHORIZATION.md)。
+
+### 4. 构建并启动采集服务
 
 ```bash
 docker compose build
@@ -150,13 +156,7 @@ docker compose ps
 DASHBOARD_PORT=8080
 ```
 
-如果 Docker CLI 没有 buildx：
-
-```bash
-docker build -f Dockerfile.frontend -t promotion-dashboard-frontend .
-docker build -f Dockerfile.collector -t promotion-dashboard-scheduler .
-docker compose up -d --no-build
-```
+构建需要 Docker Buildx 和 Compose 2.17+；缺少插件时先安装对应官方插件，不使用旧版构建器替代。
 
 更多部署、检查和运维命令见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 
@@ -166,7 +166,7 @@ docker compose up -d --no-build
 
 - 容器第一次启动：立即执行评论任务并建立启动基线。
 - 每天 `08:00`：视频数据采集 → 图文数据采集 → 快照校验 → 评论监测 → 邮件发送。
-- 每小时：执行到期的分层评论任务 → 发送待发邮件。
+- 每小时：检查新内容发现是否到期 → 按内容年龄分层监测评论 → 发送待发邮件。新内容发现默认每2小时执行一次。
 
 调度状态保存在 `data/scheduler_state.json`。同一小时内重启容器不会重复执行整轮任务。
 
@@ -176,41 +176,27 @@ docker compose up -d --no-build
 
 B站、抖音、小红书和视频号执行以下流程：
 
-1. 每 2 小时读取账号最新一页内容，发现新增作品。
-2. 默认检查各账号近 90 天的最新 10 条内容。
-3. 0～7 天内容每 2 小时、8～30 天每 6 小时、31～90 天每 24 小时完整分页一级评论。
-4. 仅当一级评论 `reply_count` 增长时查询该评论的回复详情。
+1. 默认每2小时读取账号最新一页内容，发现新增作品。
+2. 默认保留全部历史内容，按内容年龄分层轮询：7天内每2小时、30天内每6小时、更早内容每24小时。
+3. 对本轮到期内容完整分页读取一级评论。
+4. 默认启用回复检测，按跟踪评论的回复增长与补查条件读取二级回复。
 5. 使用评论 ID 去重，只把新增事件写入邮件队列。
 
 默认参数：
 
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
-ARTICLE_FETCH_ARGS=--wechat-pages 5
-COMMENT_MONITOR_ARGS=--limit 10 --max-age-days 90 --max-pages 20
+ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
+COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 90 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
-TIKHUB_DAILY_CALL_LIMIT=800
 ```
 
-- `--limit 10` 表示每个账号最多检查最新 10 条内容。
-- `--max-age-days 90` 表示只检查近 90 天发布的内容。
-- `--max-pages 20` 是单条内容的安全上限。
+- `--limit 0` 表示不按每账号条数截断，按内容年龄分层轮询。
+- `--max-age-days 90` 默认只检查最近 3 个月的作品；设置为 `0` 可恢复历史全量检查。
+- `--max-pages 200` 是每条内容及每个回复线程的分页安全上限。
 - 游标异常、游标重复或超过上限时，该内容本轮不推进状态，下小时重试。
-- `--no-replies` 可紧急完全关闭官方回复检测。
-- 可用 `--no-discovery` 关闭小时级新内容发现。
-
-### 评论与官方回复时间线
-
-- 首次正式运行写入 `timeline_started_at`，时间线不回填此时刻之前的评论和回复。
-- 仅有平台时间戳不早于上线时刻的非官方一级评论进入时间线。
-- 回复作者稳定用户 ID 与被监测账号匹配时，才计为官方回复；昵称不用于猜测。
-- 官方响应耗时 = 官方回复平台时间 - 一级评论平台时间。
-- 时间线大屏支持平台、账号、回复状态、时间和关键词筛选及 CSV 导出。
-
-### API 预算
-
-`TIKHUB_DAILY_CALL_LIMIT` 是所有 TikHub 请求共享的北京时间每日硬上限。每次 HTTP 尝试在发出前原子扣减额度，包括失败重试。达到上限后不再发出请求，未执行任务保留到下一调度周期。
-首次启用当天的用量只覆盖启用时刻之后的请求，大屏会显示 API 记账起点。
+- 可显式设置 `--no-replies` 关闭回复检测；默认启用。
+- 可用 `--no-discovery` 关闭新内容发现。已有 `.env` 中的参数覆盖仍会生效，升级时需同步检查。
 
 ### 只提醒服务启动后的评论
 
@@ -226,6 +212,7 @@ CSDN、电子发烧友、百家号、知乎、微信公众号、今日头条和�
 
 - 只保证发现评论数量增长。
 - 不保证取得评论正文、评论人或回复关系。
+- 数量基线按账号和内容 ID 隔离；来源或统计口径变化时静默重建，缓存与未知值不推进基线。
 - 数据快照每天 `08:00` 更新，因此增长通常在每日采集后发现。
 
 ### 邮件投递语义
@@ -278,9 +265,11 @@ python3 pipeline/fetch_article_data.py --mock
 
 | 平台 | 主要数据源 | 重要边界 |
 | --- | --- | --- |
-| B站、抖音、视频号 | TikHub | 部分指标可能不公开；B站详情补全调用量较大 |
-| CSDN、电子发烧友、百家号、搜狐 | 公开主页 | 页面变化、访问限制或历史范围可能导致部分覆盖 |
-| 知乎、小红书、微信公众号 | TikHub | 阅读量、公众号互动等取决于接口权限和额度 |
+| B站、抖音、视频号 | 授权后台 provider；B站公开详情补充 | 后台流程需登录校准；未接通时保留旧快照 |
+| CSDN、电子发烧友 | 公开主页与列表接口 | 核验精确作者、总数和完整分页，缺失指标保持未知 |
+| 搜狐 | 浏览器公开作者页及正常滚动分页 | 核验媒体ID、逐篇作者和总数；仅阅读与评论可得 |
+| 百家号 | 授权创作后台 provider | 独立登录、稳定app_id与逐篇图文指标核验；不再使用无互动指标的公开列表作为默认来源 |
+| 知乎、小红书、微信公众号 | 授权后台或公众号官方 API provider | 需账号权限与字段映射；当前仍有接入待办 |
 | 今日头条 | Playwright 访问公开作者页 | 需要 Chromium；访问校验或页面变化可能导致失败 |
 | 其他后台数据 | `data/article_manual_input.json` | 由人工导入内容决定覆盖范围 |
 
@@ -306,7 +295,6 @@ python3 -m http.server 8081 --directory web
 
 - `http://127.0.0.1:8081/`
 - `http://127.0.0.1:8081/articles/`
-- `http://127.0.0.1:8081/comments/`
 
 ## 手动运行评论任务
 
@@ -334,7 +322,6 @@ python3 -m unittest discover -s tests -v
 python3 pipeline/validate_snapshots.py
 node --check web/js/app.js
 node --check web/articles/js/app.js
-node --check web/comments/js/app.js
 docker compose config --quiet
 ```
 
@@ -349,9 +336,6 @@ docker compose config --quiet
 | `web/data/dashboard_data.json` | 视频页面数据 | 是 |
 | `web/articles/data/article_dashboard_data.json` | 图文页面数据 | 是 |
 | `data/comment_state.json` | 评论ID、启动基线和数量游标 | 是 |
-| `data/comment_timeline.json` | 上线后评论与官方回复原始时间线 | 是 |
-| `data/api_usage.json` | TikHub 近 35 天分任务调用记账 | 是 |
-| `web/comments/data/comment_timeline.json` | 时间线大屏脱敏快照 | 是 |
 | `data/comment_alert.json` | SMTP待发队列 | 是 |
 | `data/scheduler_state.json` | 最近调度时段及返回码 | 是 |
 
@@ -372,3 +356,5 @@ docker compose config --quiet
 - 指标定义、去重规则和质量保护见 [DASHBOARD_AUDIT.md](DASHBOARD_AUDIT.md)。
 - Docker部署和故障处理见 [DEPLOYMENT.md](DEPLOYMENT.md)。
 - 图文账号原始标识核对表见 [图文及文章.md](图文及文章.md)。
+
+账号扫码、重新授权、超时与故障恢复操作见 [授权操作说明](docs/AUTHORIZATION_OPERATIONS.md)。

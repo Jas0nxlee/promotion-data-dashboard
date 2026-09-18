@@ -11,9 +11,10 @@ from pathlib import Path
 from snapshot_utils import atomic_write_json
 
 
+from runtime import DATA, WEB
 ROOT = Path(__file__).resolve().parent.parent
-TIMELINE_PATH = ROOT / "data" / "comment_timeline.json"
-WEB_TIMELINE_PATH = ROOT / "web" / "comments" / "data" / "comment_timeline.json"
+TIMELINE_PATH = DATA / "comment_timeline.json"
+WEB_TIMELINE_PATH = WEB / "comments" / "data" / "comment_timeline.json"
 CN_TZ = timezone(timedelta(hours=8))
 
 
@@ -67,6 +68,18 @@ def record_comment(timeline: dict, item: dict, comment: dict, *, observed_at: st
     events = timeline["events"]
     existing = events.get(key)
     if existing:
+        # A stable comment ID can prove the same content across the Channels
+        # legacy numeric-ID and creator export-ID namespaces. Never use names.
+        old_content = existing.get("content_id")
+        new_content = item.get("content_id", "")
+        if (item.get("platform") == "wechat_channels" and new_content.startswith("export/")
+                and old_content and old_content != new_content
+                and existing.get("account_key") == item.get("account_key")):
+            for event in events.values():
+                if (event.get("platform") == item["platform"] and event.get("account_key") == item["account_key"]
+                        and event.get("content_id") == old_content):
+                    event.update({"content_id": new_content, "content_title": item.get("title") or event.get("content_title", ""),
+                                  "content_url": item.get("url", ""), "id_migrated_from": old_content})
         existing.update({
             "content": comment.get("content") or existing.get("content", ""),
             "like": comment.get("like"),
@@ -200,7 +213,7 @@ def build_public_snapshot(timeline: dict, *, api_usage: dict | None = None,
         "api_usage": api_usage or {},
         "last_scan": last_scan or {},
         "provenance": {
-            "source": "TikHub 平台评论接口",
+            "source": "平台原生评论数据",
             "scope": "功能上线后的新增评论与已确认官方回复",
             "supported_platforms": ["抖音", "B站", "小红书", "视频号"],
             "time_policy": "仅使用平台返回的发布时间计算官方响应耗时",

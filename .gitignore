@@ -3,6 +3,18 @@
 .serverenv
 .venv/
 .venv-win/
+.runtime/
+data/sessions/
+data/exports/
+data/verification/
+data/identity_quarantine/
+data/identity_migrations/
+data/account_replacements/
+data/run_history.jsonl
+data/collection_usage.json
+data/collection_usage.json.lock
+data/collection_budget_overrides.json
+data/scheduler.lock
 
 # Python / macOS
 __pycache__/
@@ -18,6 +30,9 @@ output/
 data/debug/
 data/*.log
 data/comment_alert.json
+data/comment_notification_settings.json
+data/comment_notification_settings.lock
+data/session_maintenance_state.json
 data/scheduler_state.json
 data/comment_state.json
 data/comment_timeline.json
