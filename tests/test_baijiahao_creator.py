@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 from urllib.parse import urlencode
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'pipeline'))
@@ -85,9 +85,46 @@ class BaijiahaoCreatorTests(unittest.TestCase):
 
     def test_repeated_empty_or_changed_total_page_fails(self):
         first=[article(str(int(CID)+i)) for i in range(10)]
-        for second in [page([],11,2),page([],0,2),page([first[0]],11,2),page([article('123')],12,2),page([article('123')],11,1)]:
+        for second in [page([],11,2),page([first[0]],11,2),page([article('123')],12,2),page([article('123')],11,1)]:
             with self.assertRaises(ProviderError):
                 BaijiahaoCreatorProvider(ACCOUNT,{},Source([page(first,11),second])).collect()
+
+    @patch('providers.baijiahao_creator.time.sleep')
+    def test_transient_zero_total_retries_same_page_without_losing_rows(self, sleep):
+        first=[article(str(int(CID)+i)) for i in range(10)]
+        source=Source([page(first,11),page([],0,2),page([article(str(int(CID)+10))],11,2)],
+                      profiles=[PROFILE,PROFILE,PROFILE])
+        source.catalog_page=Mock(wraps=source.catalog_page)
+        result=BaijiahaoCreatorProvider(ACCOUNT,{},source).collect()
+        self.assertTrue(result.complete);self.assertEqual(11,len(result.records))
+        self.assertEqual([1,2,2],[call.args[0] for call in source.catalog_page.call_args_list])
+        self.assertEqual([{'page':2,'retries':1}],result.profile['retried_catalog_pages'])
+        sleep.assert_called_once_with(2)
+
+    @patch('providers.baijiahao_creator.time.sleep')
+    def test_persistent_zero_total_stops_after_two_retries(self, sleep):
+        first=[article(str(int(CID)+i)) for i in range(10)]
+        source=Source([page(first,11),*[page([],0,2) for _ in range(3)]],
+                      profiles=[PROFILE,PROFILE,PROFILE])
+        source.catalog_page=Mock(wraps=source.catalog_page)
+        with self.assertRaisesRegex(ProviderError,'连续 3 次'):
+            BaijiahaoCreatorProvider(ACCOUNT,{},source).collect()
+        self.assertEqual([1,2,2,2],[call.args[0] for call in source.catalog_page.call_args_list])
+        self.assertEqual([2,5],[call.args[0] for call in sleep.call_args_list])
+
+    @patch('providers.baijiahao_creator.time.sleep')
+    def test_retry_rechecks_identity_and_stops_on_expiry(self, sleep):
+        first=[article(str(int(CID)+i)) for i in range(10)]
+        for error in [ProviderError('session_expired','login'),ProviderError('rate_limited','wait')]:
+            source=Source([page(first,11),page([],0,2)])
+            source.profile=Mock(side_effect=[PROFILE,error])
+            source.catalog_page=Mock(wraps=source.catalog_page)
+            with self.assertRaisesRegex(ProviderError,error.reason):
+                BaijiahaoCreatorProvider(ACCOUNT,{},source).collect()
+            self.assertEqual(2,source.catalog_page.call_count)
+        source=Source([page(first,11),page([],0,2)],profiles=[PROFILE,{**PROFILE,'verified_account_id':'other'}])
+        with self.assertRaisesRegex(ProviderError,'identity_mismatch'):
+            BaijiahaoCreatorProvider(ACCOUNT,{},source).collect()
 
     def test_page_size_or_page_count_cannot_change_silently(self):
         for key,value in [('pageSize',20),('totalPage',2),('totalCount',True)]:
@@ -126,18 +163,21 @@ class BaijiahaoCreatorTests(unittest.TestCase):
             seen.append(response)
         def navigate(url,**kwargs):
             self.assertIn('/builder/rc/content?',url)
-            self.assertIn('currentPage=52&',url)
-            deliver(52,'video')  # Unrelated widgets cannot provide catalog evidence.
-            deliver(52)
+            current=53 if 'currentPage=53&' in url else 52
+            self.assertIn(f'currentPage={current}&',url)
+            deliver(current,'video')  # Unrelated widgets cannot provide catalog evidence.
+            deliver(current)
         ui.goto.side_effect=navigate
         ui.locator.return_value.click.side_effect=lambda **kwargs:deliver(53)
         self.assertEqual(52,source.catalog_page(52)['page']['currentPage'])
         self.assertEqual(53,source.catalog_page(53)['page']['currentPage'])
-        ui.goto.assert_called_once()
+        self.assertEqual(53,source.catalog_page(53)['page']['currentPage'])
+        self.assertEqual(2,ui.goto.call_count)  # Same-page retry reloads; it cannot click Next.
         ui.locator.assert_called_once_with('li.cheetah-pagination-next[aria-disabled="false"] button')
         source.context.request.get.assert_not_called()
-        self.assertEqual(2,source.call_count)
-        self.assertEqual(2,ui.remove_listener.call_count)
+        self.assertEqual(3,source.call_count)
+        self.assertEqual(3,source.budget.consume.call_count)
+        self.assertEqual(3,ui.remove_listener.call_count)
         self.assertFalse(hasattr(source,'_read_headers'))
 
     def test_normal_page_http_failure_stops_without_direct_request_fallback(self):

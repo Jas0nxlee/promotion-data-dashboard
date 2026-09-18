@@ -1,5 +1,7 @@
 """Read verified WeChat publication pages without retaining their login token."""
 import re
+import os
+from runtime import RUNTIME
 from urllib.parse import parse_qs, urlencode, urlsplit, urlunsplit
 
 from .base import Collection, ProviderError, identifier, number, timestamp, now
@@ -52,7 +54,9 @@ def article_record(raw, group, profile):
             'official_message_id': stable_id(group.get('msgid')),
             'title': raw.get('title', ''), 'summary': raw.get('digest', ''),
             'url': url, 'cover': raw.get('cover', ''),
-            'published_at': timestamp((group.get('sent_info') or {}).get('time')),
+            'published_at': timestamp((group.get('publish_info') or {}).get('create_time')
+                                      if group.get('type') == 10002 else (group.get('sent_info') or {}).get('time')),
+            'published_at_source': 'publish_info.create_time' if group.get('type') == 10002 else 'sent_info.time',
             'content_type': '公众号', 'tags': ['普通文章' if kind == 0 else '图片消息'],
             'verified_owner_account_id': profile['verified_account_id'],
             'publication_state': 'published', 'stats': stats,
@@ -63,7 +67,8 @@ def article_record(raw, group, profile):
                               'root_comments': number(raw.get('comment_num'))},
             'metric_provenance': {
                 'like': {'source': 'wechat_browser', 'missing_reason': 'incompatible_unit'},
-                'comment': {'source': 'wechat_browser', 'definition': 'lifetime_visible_comments_including_replies'},
+                'comment': {'source': 'wechat_browser', 'definition': 'lifetime_visible_comments_including_replies',
+                            **({'missing_reason': 'not_returned_in_publication_page'} if stats['comment'] is None else {})},
                 'read': {'source': 'wechat_browser', 'missing_reason': 'incompatible_unit'},
                 'share': {'source': 'wechat_browser', 'missing_reason': 'incompatible_unit'},
                 'collect': {'source': 'wechat_browser', 'missing_reason': 'not_in_publication_page'}},
@@ -72,6 +77,7 @@ def article_record(raw, group, profile):
 
 def normalize_catalog(pages, profile):
     rows, exclusions, group_ids, article_ids = [], [], set(), set()
+    excluded_groups = []
     total, expected_begin, complete = None, 0, False
     for payload in pages:
         groups = payload.get('publish_list')
@@ -89,10 +95,44 @@ def normalize_catalog(pages, profile):
             if gid in group_ids:
                 raise ProviderError('incomplete_pagination', '公众号消息组分页重复')
             group_ids.add(gid)
-            if (not timestamp((group.get('sent_info') or {}).get('time'))
-                    or (group.get('sent_result') or {}).get('msg_status') not in (2, 7)):
-                raise ProviderError('schema_changed', '消息组发表时间或发表状态尚未核验')
-            if group.get('type') != 9 or not isinstance(group.get('appmsg_info'), list) or not group['appmsg_info']:
+            group_type = group.get('type')
+            sent_info, sent_result = group.get('sent_info') or {}, group.get('sent_result') or {}
+            published_info = group.get('publish_info') or {}
+            standalone = group_type == 10002
+            if standalone and (published_info.get('publish_status') != 200
+                               or identifier(published_info.get('msgid')) != gid
+                               or not timestamp(published_info.get('create_time'))):
+                raise ProviderError('schema_changed', f'独立发表消息组 {gid} 的身份、成功状态或发表时间尚未核验')
+            if not standalone and not timestamp(sent_info.get('time')):
+                raise ProviderError('schema_changed', f'消息组 {gid} 缺少有效发表记录时间')
+            status = sent_result.get('msg_status')
+            publish_failed = (status == 6 and isinstance(sent_result.get('msg_fail_reason'), str)
+                              and '发表失败' in sent_result['msg_fail_reason'])
+            send_failed = (status == 5 and isinstance(sent_result.get('refuse_reason'), str)
+                           and sent_result['refuse_reason'] == 'SENDFAIL_GETTOUINLIST_FAIL')
+            if (group_type == 9 and type(sent_info.get('is_published')) is int and sent_info['is_published'] == 0
+                    and (publish_failed or send_failed)):
+                # Failed attempts are neither published articles nor deletions.
+                # Their draft IDs may recur in a later successful publication.
+                excluded_groups.append({'official_message_id': gid, 'reason': 'publication_failed', 'msg_status': status})
+                continue
+            if (group_type == 9 and status == 1 and type(sent_info.get('is_published')) is int
+                    and sent_info['is_published'] == 0 and isinstance(group.get('view'), dict)
+                    and group['view'].get('status') == '审核中'):
+                excluded_groups.append({'official_message_id': gid, 'reason': 'publication_pending', 'msg_status': 1})
+                continue
+            unavailable_deleted = (group_type == 9 and status == 8
+                and isinstance(group.get('view'), dict) and group['view'].get('status') == '无法查看'
+                and isinstance(group.get('appmsg_info'), list) and bool(group['appmsg_info'])
+                and all(isinstance(raw, dict) and raw.get('is_deleted') is True for raw in group['appmsg_info']))
+            if not standalone and status not in (2, 7) and not unavailable_deleted:
+                raise ProviderError('schema_changed', f'消息组 {gid} 的发表状态 {status} 尚未核验')
+            if (group_type == 16 and status == 7 and isinstance(group.get('video_info'), dict)
+                    and group.get('appmsg_info') == [] and isinstance(group.get('view'), dict)
+                    and group['view'].get('status') == '已删除'):
+                excluded_groups.append({'official_message_id': gid, 'reason': 'deleted_video_message', 'msg_status': 7})
+                continue
+            if group_type not in (9, 10002) or not isinstance(group.get('appmsg_info'), list) or not group['appmsg_info']:
                 raise ProviderError('unsupported_content_type', '发表目录出现尚未核验的消息类型，停止全量替换')
             for raw in group['appmsg_info']:
                 if not isinstance(raw, dict):
@@ -112,7 +152,10 @@ def normalize_catalog(pages, profile):
                                        'item_show_type': kind,
                                        'reason': 'deleted' if raw['is_deleted'] else 'standalone_channels_video'})
                     continue
-                rows.append(article_record(raw, group, profile))
+                row = article_record(raw, group, profile)
+                if payload.get('_fetched_at'):
+                    row['fetched_at'] = payload['_fetched_at']
+                rows.append(row)
         expected_begin += len(groups)
         if expected_begin > total or (not groups and expected_begin < total):
             raise ProviderError('incomplete_pagination', '公众号空页或消息组数超过声明总数')
@@ -121,7 +164,8 @@ def normalize_catalog(pages, profile):
         raise ProviderError('incomplete_pagination', '未读取任何发表目录页')
     result_profile = {**profile, 'total': len(rows) if complete else None,
                       'publication_group_total': total, 'publication_groups_covered': len(group_ids),
-                      'publication_items_covered': len(article_ids), 'excluded_contents': exclusions}
+                      'publication_items_covered': len(article_ids), 'excluded_contents': exclusions,
+                      'excluded_publication_groups': excluded_groups}
     return result_profile, rows, complete
 
 
@@ -186,6 +230,7 @@ class WeChatBrowserProvider:
 
     def _publication_pages(self, max_pages):
         page = self.browser.context.new_page()
+        self._cached_pages_reused = 0
         try:
             self._navigate(page, HOST + '/')
             link = page.locator('a[href*="/cgi-bin/appmsgpublish"]').filter(has_text='发表记录').first.get_attribute('href')
@@ -193,20 +238,47 @@ class WeChatBrowserProvider:
                 raise ProviderError('schema_changed', '公众号首页缺少发表记录导航')
             from urllib.parse import urljoin
             self._navigate(page, urljoin(HOST, link), PUBLISH)
-            for index in range(max_pages):
-                page.wait_for_function('Array.isArray(window.wx?.cgiData?.publish_list)', timeout=self.timeout)
-                data = page.evaluate('''() => ({total_count:wx.cgiData.total_count,begin:wx.cgiData.begin,
+            navigation_url = page.url
+            def capture():
+                return page.evaluate('''() => ({total_count:wx.cgiData.total_count,begin:wx.cgiData.begin,
                     count:wx.cgiData.count,publish_list:wx.cgiData.publish_list})''')
+            head = capture()
+            cache = None
+            if (os.environ.get('PROMOTION_AUTHORIZATION_OPERATION') == '1'
+                    and RUNTIME.parent.name == 'authorizations' and re.fullmatch(r'[a-f0-9]{32}', RUNTIME.name)):
+                from .wechat_publication_cache import PublicationPageCache
+                identity = {key: self.verified_profile[key] for key in ('verified_account_id', 'public_biz')}
+                cache = PublicationPageCache(RUNTIME / 'wechat-publication-pages', identity, head)
+            begin, loaded_begin = 0, 0
+            for index in range(max_pages):
+                data = head if index == 0 else cache.get(begin) if cache else None
+                reused = index != 0 and data is not None
+                if data is None:
+                    if loaded_begin + 10 == begin:
+                        self._action('next_publication_page')
+                        page.get_by_role('link', name='下一页', exact=True).click(timeout=self.timeout)
+                        page.wait_for_function('(n) => window.wx?.cgiData?.begin === n', arg=begin, timeout=self.timeout)
+                    else:
+                        # Resume through the same normal page's observed begin
+                        # parameter; do not replay discarded auth headers.
+                        parsed = urlsplit(navigation_url)
+                        query = parse_qs(parsed.query)
+                        query['begin'] = [str(begin)]
+                        self._navigate(page, urlunsplit((parsed.scheme, parsed.netloc, parsed.path,
+                                                        urlencode(query, doseq=True), '')), PUBLISH)
+                    loaded_begin = begin
+                    data = capture()
+                if reused:
+                    self._cached_pages_reused += 1
+                else:
+                    data = cache.put(data) if cache else {**data, '_fetched_at': now()}
                 yield data
-                begin, total = number(data.get('begin')), number(data.get('total_count'))
-                if begin is None or total is None:
-                    raise ProviderError('schema_changed', '公众号分页计数缺失')
-                expected = begin + len(data['publish_list'])
-                if expected >= total or index + 1 >= max_pages:
+                current, total = number(data.get('begin')), number(data.get('total_count'))
+                if current != begin or total is None:
+                    raise ProviderError('schema_changed', '公众号分页计数缺失或偏移异常')
+                begin += len(data['publish_list'])
+                if begin >= total:
                     break
-                self._action('next_publication_page')
-                page.get_by_role('link', name='下一页', exact=True).click(timeout=self.timeout)
-                page.wait_for_function('(n) => window.wx?.cgiData?.begin === n', arg=expected, timeout=self.timeout)
         finally:
             page.close()
 
@@ -222,6 +294,7 @@ class WeChatBrowserProvider:
         note = (f"消息组覆盖 {profile['publication_groups_covered']}/{profile['publication_group_total']}；"
                 f"文章与图片消息 {len(records)}；明确排除 {sum(r['reason']=='deleted' for r in excluded)} 条已删除、"
                 f"{sum(r['reason']=='standalone_channels_video' for r in excluded)} 条独立视频号内容；"
+                f'另有 {len(profile["excluded_publication_groups"])} 个明确排除的消息组（发表失败、审核中或已删除视频消息）未计为图文文章；'
                 '阅读与分享人数单列，次数和收藏未知')
         return Collection(profile, records, complete, note, self.source, self.call_count)
 

@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
+import re
 from pathlib import Path
 import secrets
 import socket
@@ -21,6 +22,8 @@ from providers.health import read_verification
 from providers.base import ProviderError
 from providers.authorization import AuthorizationStore
 from providers.public_articles import PUBLIC_ARTICLE_PLATFORMS, public_article_settings
+from comment_notifications import NotificationStore, effective_rule
+from comment_monitor import load_recipient_map
 
 
 NATIVE_PROVIDERS = {
@@ -57,6 +60,7 @@ class Panel:
     def __init__(self):
         self.token = secrets.token_urlsafe(32)
         self.store = SettingsStore()
+        self.notifications = NotificationStore()
         self.jobs = {}
         self.executor = ThreadPoolExecutor(max_workers=2)
         self.lock = threading.Lock()
@@ -68,6 +72,8 @@ class Panel:
 
     def summary(self):
         config = self.store.read()["accounts"]
+        notification_rules = self.notifications.read()
+        platform_recipients, _ = load_recipient_map()
         result = []
         active = self.login_manager.status() if self.login_manager else None
         for key, account in accounts(include_public=True).items():
@@ -87,6 +93,9 @@ class Panel:
                            "authorization": {name: state.get(name) for name in ("status", "message", "expires_at", "updated_at")},
                            "login_session": active if active and active["account"] == key else None,
                            "health": health,
+                           "notification": {**effective_rule(key, account["platform"], notification_rules, platform_recipients),
+                                            "configured_email": notification_rules.get(key, {}).get("email", ""),
+                                            "configured_owner": notification_rules.get(key, {}).get("owner", "")},
                            "job": self.jobs.get(key, {})})
         return result
 
@@ -178,7 +187,30 @@ class Panel:
         self.executor.shutdown(wait=False, cancel_futures=True)
 
 
+def configured_origins():
+    values = [os.environ.get("PROMOTION_PANEL_ORIGIN", ""),
+              *os.environ.get("PROMOTION_PANEL_ALLOWED_ORIGINS", "").split(",")]
+    origins = set()
+    for value in values:
+        origin = value.strip()
+        if not origin:
+            continue
+        parsed = urlparse(origin)
+        try:
+            port = parsed.port
+        except ValueError:
+            raise ValueError("授权管理访问地址端口无效") from None
+        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.path
+                or parsed.params or parsed.query or parsed.fragment or parsed.username or parsed.password
+                or not re.fullmatch(r"[A-Za-z0-9.\[\]:-]+", parsed.netloc)
+                or (port is not None and not 1 <= port <= 65535)):
+            raise ValueError("授权管理访问地址必须是准确的 http(s)://主机[:端口]，不能含路径、凭证或通配符")
+        origins.add(origin)
+    return origins
+
+
 def handler(panel):
+    external_origins = configured_origins()
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_args):
             pass
@@ -194,17 +226,14 @@ def handler(panel):
 
         def host_allowed(self):
             hosts = {f"127.0.0.1:{self.server.server_port}", f"localhost:{self.server.server_port}"}
-            external = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
-            if external:
-                hosts.add(urlparse(external).netloc)
+            hosts.update(urlparse(origin).netloc for origin in external_origins)
             return self.headers.get("Host") in hosts
 
         def origin_allowed(self):
             origins = {f"http://127.0.0.1:{self.server.server_port}", f"http://localhost:{self.server.server_port}"}
-            external = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
-            if external:
-                origins.add(external)
-            return self.headers.get("Origin", "") in origins
+            origins.update(external_origins)
+            origin = self.headers.get("Origin", "")
+            return origin in origins and urlparse(origin).netloc == self.headers.get("Host")
 
         def do_GET(self):
             if not self.host_allowed():
@@ -258,6 +287,8 @@ def handler(panel):
                         raise ProviderError("authorization_in_progress", "正在授权，请先完成或取消再修改配置")
                     panel.store.update(key, payload["settings"])
                     result = {"status": "saved"}
+                elif self.path == "/api/notifications/save":
+                    result = {"status": "saved", "rule": panel.notifications.update(key, payload["rule"])}
                 else:
                     return self.respond({"error": "not found"}, 404)
                 self.respond(result)
@@ -274,12 +305,10 @@ def main():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--port", type=int, default=18761)
     args = p.parse_args()
-    origin = os.environ.get("PROMOTION_PANEL_ORIGIN", "")
-    if origin:
-        parsed = urlparse(origin)
-        if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.path
-                or parsed.params or parsed.query or parsed.fragment or parsed.username or parsed.password):
-            p.error("PROMOTION_PANEL_ORIGIN 必须是准确的 http(s)://主机[:端口]，不能含路径或凭证")
+    try:
+        configured_origins()
+    except ValueError as exc:
+        p.error(str(exc))
     panel = Panel()
     server = ThreadingHTTPServer(("127.0.0.1", args.port), handler(panel))
     print(f"账号接入面板：http://127.0.0.1:{server.server_port} （仅本机可访问）", flush=True)

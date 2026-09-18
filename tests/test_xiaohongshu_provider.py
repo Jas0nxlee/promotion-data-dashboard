@@ -1,8 +1,9 @@
 import copy
-from contextlib import contextmanager
+from contextlib import contextmanager, nullcontext
 from pathlib import Path
 import sys
 import unittest
+from unittest.mock import patch
 import json
 from urllib.parse import urlsplit, parse_qs
 
@@ -165,6 +166,9 @@ class XiaohongshuBrowserTests(unittest.TestCase):
         self.assertEqual(5, len(rows))
         self.assertEqual(2, stats["root_pages"])
         self.assertEqual(2, stats["reply_pages"])
+        self.assertIs(stats["comments_complete"], True)
+        self.assertIs(stats["replies_complete"], True)
+        self.assertEqual(3, stats["expected_replies"])
         reply = next(x for x in rows if x["comment_id"] == "e" * 24)
         self.assertEqual("c" * 24, reply["parent_comment_id"])
         self.assertEqual("d" * 24, reply["reply_to_comment_id"])
@@ -175,6 +179,9 @@ class XiaohongshuBrowserTests(unittest.TestCase):
         self.assertEqual(2, len(rows))
         self.assertEqual(0, stats["reply_pages"])
         self.assertNotIn(REPLIES, self.requests)
+        self.assertIs(stats["comments_complete"], True)
+        self.assertIs(stats["replies_complete"], False)
+        self.assertEqual(3, stats["expected_replies"])
 
     def test_zero_comments_requires_authenticated_terminal_and_empty_dom(self):
         self.roots = [envelope([])]
@@ -182,6 +189,9 @@ class XiaohongshuBrowserTests(unittest.TestCase):
         rows, stats = self.scan()
         self.assertEqual([], rows)
         self.assertEqual(1, stats["root_pages"])
+        self.assertIs(stats["comments_complete"], True)
+        self.assertIs(stats["replies_complete"], True)
+        self.assertEqual(0, stats["expected_replies"])
         self.roots[0]["data"]["has_more"] = True
         with self.assertRaisesRegex(ProviderError, "incomplete_pagination"):
             self.scan()
@@ -190,6 +200,53 @@ class XiaohongshuBrowserTests(unittest.TestCase):
         rows, stats = self.scan(root="c" * 24)
         self.assertEqual(1, stats["root_pages"])
         self.assertEqual(3, sum(bool(x["parent_comment_id"]) for x in rows))
+        self.assertIs(stats["comments_complete"], False)
+        self.assertIs(stats["replies_complete"], False)
+        self.assertIsNone(stats["expected_replies"])
+
+    def test_targeted_terminal_root_page_does_not_claim_whole_note_coverage(self):
+        self.roots[0]["data"]["has_more"] = False
+        rows, stats = self.scan(root="c" * 24)
+        self.assertEqual(3, sum(bool(x["parent_comment_id"]) for x in rows))
+        self.assertFalse(stats["comments_complete"])
+        self.assertFalse(stats["replies_complete"])
+        self.assertIsNone(stats["expected_replies"])
+
+    def test_nonempty_zero_reply_sample_has_complete_coverage_without_reply_requests(self):
+        self.roots = [envelope([comment("c"), comment("f")])]
+        self.total = 2
+        rows, stats = self.scan()
+        self.assertEqual(2, len(rows))
+        self.assertTrue(stats["comments_complete"])
+        self.assertTrue(stats["replies_complete"])
+        self.assertEqual(0, stats["expected_replies"])
+        self.assertEqual(0, stats["reply_pages"])
+        self.assertNotIn(REPLIES, self.requests)
+        _, roots_only = self.scan(replies=False)
+        self.assertFalse(roots_only["replies_complete"])
+
+    def test_unknown_reply_count_cannot_produce_complete_evidence(self):
+        self.roots[0]["data"]["comments"][0].pop("sub_comment_count")
+        for include_replies in (False, True):
+            with self.subTest(include_replies=include_replies), self.assertRaisesRegex(ProviderError, "回复预览缺少"):
+                self.scan(replies=include_replies)
+
+    def test_comments_entrypoint_preserves_flags_and_separates_root_only_cache(self):
+        with patch.object(self.source, "session", side_effect=lambda: nullcontext(self.source)), \
+             patch.object(self.provider, "_profile"), patch.object(self.provider, "_public_profile"), \
+             patch.object(self.provider, "_note_url", return_value="https://www.xiaohongshu.com/fixture"):
+            item = {"content_id": NOTE["id"]}
+            _, root_stats = self.provider.comments(item, 10, False)
+            rows, full_stats = self.provider.comments(item, 10, True)
+            calls = self.source.call_count
+            cached_rows, cached_stats = self.provider.comments(item, 10, True)
+        self.assertTrue(root_stats["comments_complete"])
+        self.assertFalse(root_stats["replies_complete"])
+        self.assertTrue(full_stats["comments_complete"])
+        self.assertTrue(full_stats["replies_complete"])
+        self.assertEqual(3, full_stats["expected_replies"])
+        self.assertEqual((rows, full_stats), (cached_rows, cached_stats))
+        self.assertEqual(calls, self.source.call_count)
 
     def test_missing_more_flag_and_wrong_author_fail_closed(self):
         self.roots[0]["data"].pop("has_more")

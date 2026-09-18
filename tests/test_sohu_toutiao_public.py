@@ -116,6 +116,20 @@ class ToutiaoPublicTests(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "ID 不一致"):
             ToutiaoCollector._article_from_item(bad, TOUTIAO)
 
+    def test_distinct_verified_user_and_media_ids_are_both_required(self):
+        account={**TOUTIAO,'expected_media_id':'1866310957476868'}
+        row=toutiao_row()
+        row['itemCell']['userInfo']['mediaID']=1866310957476868
+        parsed=ToutiaoCollector._article_from_item(row,account)
+        self.assertEqual(account['platform_uid'],parsed['source_author_id'])
+        self.assertEqual(account['expected_media_id'],parsed['source_media_id'])
+        for field,value in [('userID',123),('mediaID',123)]:
+            wrong=toutiao_row();wrong['itemCell']['userInfo'].update(row['itemCell']['userInfo']);wrong['itemCell']['userInfo'][field]=value
+            with self.subTest(field=field),self.assertRaisesRegex(RuntimeError,'精确作者'):
+                ToutiaoCollector._article_from_item(wrong,account)
+        with self.assertRaisesRegex(RuntimeError,'精确作者'):
+            ToutiaoCollector._article_from_item(row,TOUTIAO)
+
     def test_two_pages_finish_or_cap_as_partial(self):
         pages = [payload([toutiao_row()], True, 100), payload([toutiao_row("7685708916088439360")])]
         entry, rows = self.collector(pages).collect(TOUTIAO)

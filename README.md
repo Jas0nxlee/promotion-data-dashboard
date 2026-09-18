@@ -187,12 +187,12 @@ B站、抖音、小红书和视频号执行以下流程：
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
 ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
-COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 0 --max-pages 200
+COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 90 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
 ```
 
 - `--limit 0` 表示不按每账号条数截断，按内容年龄分层轮询。
-- `--max-age-days 0` 保留历史作品，避免漏掉旧作品的新评论。
+- `--max-age-days 90` 默认只检查最近 3 个月的作品；设置为 `0` 可恢复历史全量检查。
 - `--max-pages 200` 是每条内容及每个回复线程的分页安全上限。
 - 游标异常、游标重复或超过上限时，该内容本轮不推进状态，下小时重试。
 - 可显式设置 `--no-replies` 关闭回复检测；默认启用。

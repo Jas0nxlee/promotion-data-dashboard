@@ -11,6 +11,9 @@
 data/debug
 data/server.log
 data/comment_alert.json
+data/comment_notification_settings.json
+data/comment_notification_settings.lock
+data/session_maintenance_state.json
 data/comment_state.json
 data/scheduler_state.json
 data/comment_timeline.json
@@ -28,4 +31,5 @@ data/account_replacements
 data/run_history.jsonl
 data/collection_usage.json
 data/collection_usage.json.lock
+data/collection_budget_overrides.json
 data/scheduler.lock

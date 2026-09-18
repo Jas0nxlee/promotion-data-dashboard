@@ -130,6 +130,21 @@ class LoginInfrastructureTests(unittest.TestCase):
         self.assertIn('auth_basic_user_file "' + str(auth), config)
         self.assertNotIn(HASH.strip(), config)
 
+    def test_lan_aliases_are_explicit_and_websocket_pairs_match(self):
+        auth = self.folder / "admin.htpasswd"
+        auth.write_text(HASH); auth.chmod(0o600)
+        template = (ROOT / "docker/login/nginx.conf.template").read_text()
+        config = gateway.render(template, "http://10.0.1.13:18762", auth,
+                                "http://127.0.0.1:18762,http://localhost:18762")
+        self.assertNotIn("@@", config)
+        for host in ("10.0.1.13:18762", "127.0.0.1:18762", "localhost:18762"):
+            self.assertIn(f'"{host}" 1;', config)
+            self.assertIn(f'"{host}|http://{host}" 1;', config)
+        self.assertNotIn('"10.0.1.13:18762|http://localhost:18762" 1;', config)
+        for alias in ("http://*", "http://user:pass@localhost", "http://localhost/path", 'http://localhost";auth_basic off;'):
+            with self.subTest(alias=alias), self.assertRaises(ValueError):
+                gateway.render(template, "http://10.0.1.13:18762", auth, alias)
+
     def test_gateway_origin_and_proxy_contract(self):
         for origin in ("http://user:password@localhost:18762", "http://localhost:18762/path", "http://localhost:18762/",
                        "http://localhost:18762?x=1", "http://localhost:99999", 'http://localhost\";auth_basic off;'):

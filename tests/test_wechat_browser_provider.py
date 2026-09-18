@@ -80,6 +80,77 @@ class WeChatBrowserTests(unittest.TestCase):
         p,rows,complete=normalize_catalog([page([])],PROFILE)
         self.assertTrue(complete);self.assertEqual([],rows)
 
+    def test_failed_unpublished_group_is_audited_without_poisoning_later_publication(self):
+        failed=group(1);failed['sent_info']['is_published']=0
+        failed['sent_result']={'msg_status':6,'msg_fail_reason':'此内容因违规发表失败，请修改后重新发表'}
+        successful=group(2,items=failed['appmsg_info'])
+        p,rows,complete=normalize_catalog([page([failed,successful])],PROFILE)
+        self.assertTrue(complete);self.assertEqual(1,len(rows))
+        self.assertEqual(2,p['publication_groups_covered'])
+        self.assertEqual([{'official_message_id':'1','reason':'publication_failed','msg_status':6}],p['excluded_publication_groups'])
+        self.assertEqual([],p['excluded_contents'])
+
+    def test_ambiguous_or_contradictory_failure_status_is_not_skipped(self):
+        for published,reason in [(None,'发表失败'),(1,'发表失败'),(0,''),(0,'未知状态')]:
+            failed=group();failed['sent_info']['is_published']=published
+            failed['sent_result']={'msg_status':6,'msg_fail_reason':reason}
+            with self.subTest(published=published,reason=reason),self.assertRaises(ProviderError):
+                normalize_catalog([page([failed])],PROFILE)
+
+    def test_legacy_send_failure_requires_unpublished_flag_and_explicit_failure_code(self):
+        failed=group();failed['sent_info']['is_published']=0
+        failed['sent_result']={'msg_status':5,'refuse_reason':'SENDFAIL_GETTOUINLIST_FAIL'}
+        profile,rows,complete=normalize_catalog([page([failed])],PROFILE)
+        self.assertTrue(complete);self.assertEqual([],rows)
+        self.assertEqual(5,profile['excluded_publication_groups'][0]['msg_status'])
+        for field,value in [('msg_status',3),('refuse_reason','UNKNOWN'),('refuse_reason','SENDFAIL_UNKNOWN')]:
+            wrong=copy.deepcopy(failed);wrong['sent_result'][field]=value
+            with self.assertRaises(ProviderError):normalize_catalog([page([wrong])],PROFILE)
+
+    def test_standalone_publication_uses_verified_publish_info_not_missing_send_time(self):
+        standalone=group(2652959773,items=[item(2652959773)])
+        standalone.update(type=10002,sent_info=None,sent_result={'reject_index_list':[]},
+                          publish_info={'msgid':2652959773,'publish_status':200,'create_time':1655973026})
+        p,rows,complete=normalize_catalog([page([standalone])],PROFILE)
+        self.assertTrue(complete);self.assertEqual('2652959773-1',rows[0]['article_id'])
+        self.assertEqual('publish_info.create_time',rows[0]['published_at_source'])
+        self.assertTrue(rows[0]['published_at'].startswith('2022-06-23'))
+        for key,val in [('msgid',999),('publish_status',100),('create_time',0)]:
+            bad=copy.deepcopy(standalone);bad['publish_info'][key]=val
+            with self.assertRaises(ProviderError):normalize_catalog([page([bad])],PROFILE)
+
+    def test_explicit_pending_review_is_not_published_or_failed(self):
+        pending=group();pending['sent_info']['is_published']=0
+        pending.update(sent_result={'msg_status':1},view={'status':'审核中'})
+        p,rows,complete=normalize_catalog([page([pending])],PROFILE)
+        self.assertTrue(complete);self.assertEqual([],rows)
+        self.assertEqual('publication_pending',p['excluded_publication_groups'][0]['reason'])
+        for published,label in [(1,'审核中'),(0,'未知状态')]:
+            bad=copy.deepcopy(pending);bad['sent_info']['is_published']=published;bad['view']['status']=label
+            with self.assertRaises(ProviderError):normalize_catalog([page([bad])],PROFILE)
+
+    def test_unavailable_group_requires_every_article_explicitly_deleted(self):
+        unavailable=group(items=[item(deleted=True),item(idx=2,deleted=True)])
+        unavailable.update(sent_result={'msg_status':8},view={'status':'无法查看'})
+        p,rows,complete=normalize_catalog([page([unavailable])],PROFILE)
+        self.assertTrue(complete);self.assertEqual([],rows)
+        self.assertEqual(['deleted','deleted'],[r['reason'] for r in p['excluded_contents']])
+        for modified in ['visible','unknown-label','empty']:
+            bad=copy.deepcopy(unavailable)
+            if modified=='visible':bad['appmsg_info'][0]['is_deleted']=False
+            if modified=='unknown-label':bad['view']['status']='未知'
+            if modified=='empty':bad['appmsg_info']=[]
+            with self.assertRaises(ProviderError):normalize_catalog([page([bad])],PROFILE)
+
+    def test_deleted_legacy_video_message_is_not_an_article(self):
+        video=group();video.update(type=16,appmsg_info=[],video_info={},sent_result={'msg_status':7},view={'status':'已删除'})
+        p,rows,complete=normalize_catalog([page([video])],PROFILE)
+        self.assertTrue(complete);self.assertEqual([],rows)
+        self.assertEqual('deleted_video_message',p['excluded_publication_groups'][0]['reason'])
+        for field,value in [('video_info',None),('appmsg_info',[item()]),('view',{'status':'未知'})]:
+            bad=copy.deepcopy(video);bad[field]=value
+            with self.assertRaises(ProviderError):normalize_catalog([page([bad])],PROFILE)
+
     def test_url_and_metadata_disagreement_fail(self):
         for field,val in (('content_url','https://evil.invalid/s'),('content_url','https://mp.weixin.qq.com/s?__biz=other&mid=123&idx=1'),('content_url','https://mp.weixin.qq.com/s?mid=999'),('itemidx',0),('appmsgid',True),('appmsgid',2**54)):
             raw=item();raw[field]=val

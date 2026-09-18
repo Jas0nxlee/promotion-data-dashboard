@@ -143,9 +143,9 @@ class NativeBrowser:
     def session(self):
         yield self
 
-    def get_json(self, url, params):
+    def get_json(self, url, params, *, min_interval=None):
         self.call_count += 1
-        self.calls.append((url, params))
+        self.calls.append((url, params, min_interval))
         return {"code": 0, "data": self.responses.pop(0)}
 
 
@@ -178,6 +178,7 @@ class BilibiliNativeTests(unittest.TestCase):
         self.assertEqual(["123"], replies[0]["user_ids"])
         self.assertEqual(0, pages)
         self.assertEqual(3, source.call_count)
+        self.assertEqual([None, 2.0, 2.0], [call[2] for call in source.calls])
 
     def test_wrong_logged_in_uid_stops_before_reading_content(self):
         source = NativeBrowser([{**self.profile, "mid": 999}])

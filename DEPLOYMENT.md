@@ -60,7 +60,7 @@ COMMENT_RECIPIENTS_JSON={"bilibili":{"email":"a@example.com","owner":"负责人"
 ```env
 VIDEO_FETCH_ARGS=--no-enrich-bili
 ARTICLE_FETCH_ARGS=--wechat-pages 200 --max-pages 200 --toutiao-pages 200
-COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 0 --max-pages 200
+COMMENT_MONITOR_ARGS=--limit 0 --max-age-days 90 --max-pages 200
 COMMENT_EMAIL_MAX_EVENTS=100
 ```
 

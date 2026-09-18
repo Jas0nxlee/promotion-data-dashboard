@@ -17,7 +17,9 @@ def accounts_fixture():
     return [{'key': key, 'name': name, 'platform': platform, 'configured': False,
              'collection_mode': 'public' if public else 'authorized',
              'can_login': not public, 'can_configure': not public,
-             'authorization': {'status': status}, 'health': {'ready': False}, 'job': {}}
+             'authorization': {'status': status}, 'health': {'ready': False}, 'job': {},
+             'notification': {'mode': 'inherit', 'enabled': True, 'email': 'default@example.com',
+                              'owner': '负责人', 'configured_email': '', 'configured_owner': ''}}
             for key, name, platform, public, status in (
                 (FIRST, '测试甲', 'baijiahao', False, 'unconfigured'),
                 (SECOND, '测试乙', 'xiaohongshu', False, 'reauth_required'),
@@ -111,6 +113,15 @@ class AuthorizationUITests(unittest.TestCase):
             self.fulfill(route, {'status': 'cancelled'})
         elif path == '/api/config/read':
             self.fulfill(route, {'provider': 'fixture'})
+        elif path == '/api/notifications/save':
+            account = next(row for row in self.accounts if row['key'] == payload['account'])
+            mode = payload['rule']['mode']
+            account['notification'] = {'mode': mode, 'enabled': mode != 'disabled',
+                                       'email': payload['rule'].get('email', 'default@example.com') if mode != 'disabled' else '',
+                                       'owner': payload['rule'].get('owner', ''),
+                                       'configured_email': payload['rule'].get('email', ''),
+                                       'configured_owner': payload['rule'].get('owner', '')}
+            self.fulfill(route, {'status': 'saved'})
         else:
             self.fulfill(route, {'status': 'running'})
 
@@ -126,6 +137,30 @@ class AuthorizationUITests(unittest.TestCase):
 
     def refresh(self):
         self.page.evaluate('refresh()')
+
+    def test_verified_account_still_discloses_missing_optional_comment_metrics(self):
+        self.accounts[0]['authorization']['status'] = 'authorized'
+        self.accounts[0]['health'] = {'ready': True, 'optional_metric_keys': ['comment'],
+                                      'metric_coverage': {'comment': 138/147}}
+        self.open()
+        text = self.row(FIRST).inner_text()
+        self.assertIn('已授权', text)
+        self.assertIn('采集验证通过', text)
+        self.assertIn('覆盖 93.9%', text)
+        self.assertIn('缺失保持未知', text)
+
+    def test_public_and_authorized_accounts_have_separate_mail_settings(self):
+        self.open()
+        self.assertTrue(self.action(PUBLIC, 'notification').is_enabled())
+        self.action(PUBLIC, 'notification').click()
+        self.assertIn('公开示例', self.page.locator('#notification-title').inner_text())
+        self.page.locator('#notification-mode').select_option('disabled')
+        self.page.locator('#notification-save').click()
+        self.page.wait_for_function('document.querySelector("#notification-editor").open===false')
+        self.assertIn('已关闭', self.row(PUBLIC).inner_text())
+        self.assertIn('平台默认', self.row(FIRST).inner_text())
+        self.assertIn(('/api/notifications/save', {'account': PUBLIC, 'rule': {'mode': 'disabled'}},
+                       'fixture-csrf'), self.posts)
 
     def test_authorization_and_data_acceptance_are_separate_and_public_needs_no_login(self):
         self.accounts[0]['authorization']['status'] = 'authorized'

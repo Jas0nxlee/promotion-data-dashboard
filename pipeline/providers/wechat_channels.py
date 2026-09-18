@@ -6,6 +6,7 @@ authentication/signing flow; no captured session secrets are persisted in recipe
 from .base import Collection, ProviderError, identifier, number, timestamp, now, unique
 from .browser import BrowserSource
 import copy
+import re
 import time
 from urllib.parse import urlparse
 
@@ -110,13 +111,19 @@ class WeChatChannelsProvider:
             profile = self._profile()
             page, base = self._request_template()
             try:
+                # Home's "视频" counter also includes image posts. Use the
+                # independent video-management tab count for this video catalog.
+                profile["video_catalog_total"] = self._video_catalog_total(page)
                 for index in range(1, (1 if discovery else max_pages) + 1):
                     payload = self.browser.post_channels_readonly(POST_PATH, {**base,
                         "pageSize": 20, "currentPage": index, "userpageType": 11, "stickyOrder": True})
                     if payload.get("errCode") != 0 or not isinstance(payload.get("data"), dict):
                         raise ProviderError("platform_error", "视频号作品读取未成功")
                     data = payload["data"]
-                    total = number(data.get("totalCount"))
+                    page_total = number(data.get("totalCount"))
+                    if total is not None and page_total != total:
+                        raise ProviderError("incomplete_pagination", "视频总数在分页期间变化，保留历史缓存")
+                    total = page_total
                     rows, more = data.get("list"), data.get("continueFlag")
                     if rows is None and total == 0:
                         rows = []
@@ -130,7 +137,7 @@ class WeChatChannelsProvider:
                             records.append(record)
                             added += 1
                     if not more:
-                        complete = len(records) == total and profile.get("homepage_total") == total
+                        complete = len(records) == total and profile["video_catalog_total"] == total
                         break
                     if not added:
                         raise ProviderError("incomplete_pagination", "视频号作品页重复或空页，尚未到达末页")
@@ -138,8 +145,47 @@ class WeChatChannelsProvider:
                 page.close()
         profile["total"] = total
         return Collection(profile, records, complete,
-                          "视频号后台视频清单；部分作者身份和收藏指标可能不返回" if complete else "视频清单尚未覆盖后台总数，保留历史缓存",
+                          "视频号后台视频清单（不含图文）；部分作者身份和收藏指标可能不返回" if complete else
+                          f"视频目录未完整：读取{len(records)}条，接口总数{total}，视频管理页总数{profile['video_catalog_total']}（首页含其它内容{profile.get('homepage_total')}），保留历史缓存",
                           self.source, self.call_count)
+
+    def _video_catalog_total(self, page):
+        self.browser.budget.consume("wechat_channels:video_catalog", task="browser_action")
+        page.bring_to_front()
+        pattern = re.compile(r"^\s*视频\s*[（(]\s*([0-9,]+)\s*[)）]\s*$")
+        stage = "展开内容管理"
+        try:
+            # Wujie can redirect a freshly loaded deep link back to Home; use
+            # the site's visible navigation after the authorized Home bootstrap.
+            page.get_by_role("link", name="内容管理", exact=True).click(timeout=20000)
+            stage = "进入视频管理并等待列表"
+            with page.expect_response(lambda response: urlparse(response.url).path == POST_PATH
+                                      and response.request.method == "POST", timeout=20000) as pending:
+                page.get_by_role("link", name="视频", exact=True).click(timeout=20000)
+            response = pending.value
+            stage = "核验视频列表响应"
+            request = response.request.post_data_json
+            payload = response.json()
+            scope_total = number((payload.get("data") or {}).get("totalCount"))
+            if (not isinstance(request, dict) or request.get("userpageType") != 11
+                    or payload.get("errCode") != 0 or scope_total is None):
+                raise ProviderError("schema_changed", "视频管理页读取范围或总数发生变化")
+            tab = page.get_by_text(pattern).first
+            stage = "读取视频管理页计数"
+            tab.wait_for(state="visible", timeout=20000)
+            deadline = time.monotonic() + 20
+            while time.monotonic() < deadline:
+                match = pattern.fullmatch(tab.inner_text().strip())
+                if match and int(match[1].replace(",", "")) == scope_total:
+                    return scope_total
+                page.wait_for_timeout(100)
+            raise ProviderError("incomplete_pagination", "视频管理页标签与正常列表响应的总数不一致")
+        except ProviderError:
+            raise
+        except Exception:
+            if "login" in page.url:
+                raise ProviderError("session_expired", "视频管理页需要重新登录") from None
+            raise ProviderError("schema_changed", f"无法核验视频管理页总数（{stage}），未使用首页合计替代") from None
 
     def _request_template(self, bind=False):
         page = self.browser.context.new_page()
@@ -294,6 +340,9 @@ class WeChatChannelsProvider:
         rows, pages, reply_pages = self._comment_pages(item, max_pages, include_replies)
         selected = rows if include_replies else [row for row in rows if not row["parent_comment_id"]]
         return selected, {"root_pages": pages, "reply_pages": reply_pages, "comments": len(selected),
+                          "comments_complete": True,
+                          "replies_complete": bool(include_replies),
+                          "expected_replies": sum(row["reply_count"] for row in rows if not row["parent_comment_id"]),
                           "unidentified_authors": sum(not row["user_ids"] for row in selected)}
 
     def replies(self, item, root_id, max_pages=200):

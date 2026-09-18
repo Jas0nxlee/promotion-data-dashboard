@@ -105,6 +105,20 @@ class LoginManagerTests(unittest.TestCase):
         with self.assertRaisesRegex(ProviderError, 'unsupported'):
             self.manager.start(PUBLIC)
 
+    def test_authorization_timeout_is_bounded_and_persisted(self):
+        from datetime import datetime
+        for value in ['0','299','3601']:
+            with patch.dict(login_manager.os.environ,{'PROMOTION_AUTHORIZATION_TTL_SECONDS':value}), \
+                 self.assertRaisesRegex(ProviderError,'invalid_authorization_ttl'):
+                self.new_manager()
+        self.manager.close()
+        with patch.dict(login_manager.os.environ,{'PROMOTION_AUTHORIZATION_TTL_SECONDS':'3600'}):
+            self.manager=self.new_manager()
+        self.addCleanup(self.manager.close)
+        self.start()
+        state=self.auth.read(FIRST)
+        self.assertAlmostEqual(3600,state['expires_at_epoch']-datetime.fromisoformat(state['started_at']).timestamp(),places=4)
+
     def test_xiaohongshu_opens_creator_and_public_login_pages(self):
         self.manager.start(SECOND)
         command = self.popen.call_args.args[0]
@@ -555,6 +569,30 @@ class LoginManagerTests(unittest.TestCase):
 
 
 class AuthorizationWorkerTests(unittest.TestCase):
+    def test_cli_allows_large_history_but_preserves_explicit_page_cap(self):
+        for extra, expected in [([],500),(['--max-pages','3'],3)]:
+            with tempfile.TemporaryDirectory() as tmp:
+                output=Path(tmp)/'result.json'
+                with patch.object(sys,'argv',['authorization_worker.py','--account',FIRST,'--output',str(output),*extra]), \
+                     patch.object(authorization_worker,'validate_candidate',return_value={'success':True}) as validate, \
+                     self.assertRaises(SystemExit) as raised:
+                    authorization_worker.main()
+                self.assertEqual(0,raised.exception.code)
+                validate.assert_called_once_with(FIRST,expected)
+
+    def test_error_message_does_not_duplicate_reason_at_manager_boundary(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            output = Path(tmp) / 'result.json'
+            with patch.object(sys, 'argv', ['authorization_worker.py', '--account', FIRST, '--output', str(output)]), \
+                 patch.object(authorization_worker, 'validate_candidate',
+                              side_effect=ProviderError('verification_incomplete', '评论尚未完整')), \
+                 self.assertRaises(SystemExit) as raised:
+                authorization_worker.main()
+            self.assertEqual(2, raised.exception.code)
+            result = json.loads(output.read_text())
+            self.assertEqual('verification_incomplete', result['reason'])
+            self.assertEqual('评论尚未完整', result['message'])
+
     def test_request_budget_failure_does_not_ask_for_another_login(self):
         from api_budget import ApiBudgetExceeded
         with tempfile.TemporaryDirectory() as tmp:
@@ -611,7 +649,7 @@ class AuthorizationWorkerTests(unittest.TestCase):
         interactive.browser.session.side_effect = session
         interactive._profile.side_effect = lambda: (self.events.append('identity') or {'verified_account_id': 'canonical'})
         interactive.browser.export_session.side_effect = export
-        metric_values = {'read': 2, 'like': 0, 'comment': 1} if metrics is None else metrics
+        metric_values = {'read': 2, 'play': 2, 'like': 0, 'comment': 1, 'share': 0} if metrics is None else metrics
         id_key = 'article_id' if platform in {'baijiahao', 'xiaohongshu'} else 'video_id'
         records = [{id_key: 'no-comments', 'stats': {**metric_values, 'comment': 0}},
                    {id_key: 'with-comments', 'stats': metric_values}]
@@ -649,6 +687,12 @@ class AuthorizationWorkerTests(unittest.TestCase):
         self.assertEqual('portable', result['settings']['session_mode'])
         self.assertNotIn('cdp_url', result['settings'])
         portable.collect.assert_called_once_with(max_pages=200)
+        portable.comments.assert_not_called()
+
+    def test_new_channels_binding_requires_metrics_without_manual_metric_config(self):
+        setup = self.setup_candidate('wechat_channels', metrics={'like': 0, 'comment': 1})
+        with self.worker(setup) as (key, _, portable), self.assertRaisesRegex(ProviderError, '必要指标'):
+            authorization_worker.validate_candidate(key)
         portable.comments.assert_not_called()
 
     def test_all_four_detail_platforms_require_comments_from_restored_session_and_strip_text(self):

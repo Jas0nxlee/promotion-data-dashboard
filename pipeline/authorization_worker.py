@@ -45,8 +45,10 @@ def validate_candidate(key, max_pages=200):
     store.update(key, settings)
     provider = ProviderRegistry().get(account)
     result = provider.collect(max_pages=max_pages)
-    if not result.profile.get("verified_account_id") or not result.complete:
-        raise ProviderError("verification_incomplete", "会话已读取，但身份或完整目录尚未通过验证")
+    if not result.profile.get("verified_account_id"):
+        raise ProviderError("verification_incomplete", "会话已读取，但账号身份尚未通过验证")
+    if not result.complete:
+        raise ProviderError("verification_incomplete", "作品目录尚未完整：" + result.note)
     if result.profile['verified_account_id'] != expected_identity(account, settings):
         raise ProviderError('identity_mismatch', '会话恢复后的账号与项目账号清单不一致')
     # Keep candidate health separate; do not advertise authorization before commit.
@@ -75,7 +77,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--account", required=True)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-pages", type=int, default=200)
+    parser.add_argument("--max-pages", type=int, default=500)
     args = parser.parse_args()
     try:
         result = validate_candidate(args.account, args.max_pages)
@@ -83,7 +85,8 @@ def main():
         result = {"success": False, "reason": "budget_exceeded",
                   "message": "今日采集请求额度已用完，请等待额度恢复或由管理员调整限额后重新验证；无需因此重新扫码"}
     except ProviderError as exc:
-        result = {"success": False, "reason": exc.reason, "message": str(exc)}
+        result = {"success": False, "reason": exc.reason,
+                  "message": str(exc).removeprefix(exc.reason + ": ")}
     except Exception:
         result = {"success": False, "reason": "verification_failed", "message": "验证未完成，请检查登录状态后重试"}
     private_json(args.output, result)

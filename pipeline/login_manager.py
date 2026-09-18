@@ -29,6 +29,9 @@ class LoginManager:
                  sessions=None, data=None, authorization=None, popen=None, start_reaper=True):
         self.store, self.catalog, self.entries = store, catalog, entries
         self.prepare_settings = prepare_settings
+        self.authorization_ttl = int(os.environ.get('PROMOTION_AUTHORIZATION_TTL_SECONDS', '1800'))
+        if not 300 <= self.authorization_ttl <= 3600:
+            raise ProviderError('invalid_authorization_ttl', '授权窗口时限必须介于300和3600秒')
         self.workspace = Path(workspace or ROOT / '.runtime' / 'authorizations')
         self.sessions, self.data = Path(sessions or SESSIONS), Path(data or DATA)
         self.auth = authorization or AuthorizationStore(self.sessions / 'authorization')
@@ -215,7 +218,7 @@ class LoginManager:
                 raise ProviderError('unsupported', '此账号使用官方API，请维护其授权配置')
             # Also excludes a collector already running when the operator clicked.
             with account_lock(key):
-                state = self.auth.begin(key, ttl_seconds=1800)
+                state = self.auth.begin(key, ttl_seconds=self.authorization_ttl)
             folder = self.workspace / state['operation_id']
             try:
                 folder.mkdir(mode=0o700)
@@ -300,7 +303,7 @@ class LoginManager:
                                     stderr=subprocess.DEVNULL, start_new_session=True)
                 active['worker'] = worker
                 self._persist()
-                timeout = max(1, min(1800, active['expires_at_epoch'] - time.time()))
+                timeout = max(1, min(self.authorization_ttl, active['expires_at_epoch'] - time.time()))
             try:
                 code = worker.wait(timeout=timeout)
             except subprocess.TimeoutExpired:

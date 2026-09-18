@@ -32,6 +32,9 @@ def item(platform="douyin"):
 
 
 class CommentPaginationTests(unittest.TestCase):
+    def test_default_comment_window_is_three_months(self):
+        self.assertEqual(90, cm.DEFAULT_MAX_AGE_DAYS)
+
     @staticmethod
     def args(**overrides):
         values = {

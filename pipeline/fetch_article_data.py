@@ -360,6 +360,30 @@ class CsdnCollector:
                 result["lifetime_collects"] = value
         return result
 
+    def _get_page(self, username, page):
+        # This public listing returned HTTP 521 at page 12 during a fast scan,
+        # while the same page was readable later. Pace CSDN separately from
+        # other public sites; retry only that server error on the same page.
+        for attempt in range(3):
+            quiet = 7 - (time.time() - getattr(self.http, "last_call", 0.0))
+            if quiet > 0:
+                time.sleep(quiet)
+            try:
+                return self.http.get_json(
+                    "https://blog.csdn.net/community/home-api/v1/get-business-list",
+                    params={
+                        "page": page, "size": 100, "businessType": "blog",
+                        "orderby": "", "noMore": "false", "year": "", "month": "",
+                        "username": username, "_": f"{int(time.time() * 1000)}{page}",
+                    },
+                    headers={"Referer": f"https://blog.csdn.net/{username}",
+                             "Accept": "application/json, text/plain, */*"},
+                    retries=1, tag=f"csdn_articles_{username}_{page}")
+            except RuntimeError as exc:
+                if "HTTP 521" not in str(exc) or attempt == 2:
+                    raise
+                time.sleep(7 * (attempt + 1))
+
     def collect(self, account):
         username = account.get("platform_uid", "").strip()
         if not username:
@@ -375,25 +399,7 @@ class CsdnCollector:
         page = 1
         while page <= self.max_pages:
             try:
-                payload = self.http.get_json(
-                    "https://blog.csdn.net/community/home-api/v1/get-business-list",
-                    params={
-                        "page": page,
-                        "size": page_size,
-                        "businessType": "blog",
-                        "orderby": "",
-                        "noMore": "false",
-                        "year": "",
-                        "month": "",
-                        "username": username,
-                        "_": f"{int(time.time() * 1000)}{page}",
-                    },
-                    headers={
-                        "Referer": f"https://blog.csdn.net/{username}",
-                        "Accept": "application/json, text/plain, */*",
-                    },
-                    retries=1,
-                    tag=f"csdn_articles_{username}_{page}")
+                payload = self._get_page(username, page)
                 if not isinstance(payload, dict) or payload.get("code") != 200:
                     raise RuntimeError("CSDN 文章接口业务状态未成功")
                 data = payload.get("data")
@@ -1072,9 +1078,11 @@ class ToutiaoCollector:
     def _article_from_item(item, account):
         from providers.base import identifier
         uid = str(account.get("platform_uid") or "")
+        media_id = str(account.get("expected_media_id") or uid)
         author = dig(item, "itemCell.userInfo", default={})
-        if (not uid or not isinstance(author, dict) or identifier(author.get("userID")) != uid
-                or identifier(author.get("mediaID")) != uid):
+        if (not uid or not media_id.isdigit() or not isinstance(author, dict)
+                or identifier(author.get("userID")) != uid
+                or identifier(author.get("mediaID")) != media_id):
             raise RuntimeError("今日头条文章精确作者 ID 与配置不符")
         article_id = identifier(item.get("group_id") or item.get("item_id") or item.get("id"))
         if not article_id:
@@ -1107,6 +1115,7 @@ class ToutiaoCollector:
             "summary": strip_html(item.get("abstract") or item.get("content") or ""),
             "tags": [],
             "source_author_id": uid,
+            "source_media_id": media_id,
             "data_source": "toutiao_public",
             "fetched_at": datetime.now(CN_TZ).isoformat(),
             "stats": {
@@ -1527,6 +1536,12 @@ def collect(args):
                     entry["error"] = message
                     entry["coverage_note"] = "采集失败"
                 print(f"    [警告] {entry['error']}", file=sys.stderr)
+            finally:
+                # Playwright's synchronous driver owns an event loop in this
+                # thread. Release it before the next account starts its own
+                # browser, including when this Toutiao account failed.
+                if account.get("collector") == "toutiao":
+                    toutiao.close()
             entry["request_counts"] = {
                 "provider": api_client.call_count - api_before,
                 "public": public_client.call_count - public_before,
@@ -1638,8 +1653,8 @@ def main():
     parser.add_argument("--interval", type=float, default=0.6, help="API 请求最小间隔秒数")
     parser.add_argument("--public-interval", type=float, default=0.15,
                         help="公开页面请求最小间隔秒数")
-    parser.add_argument("--max-pages", type=int, default=200, help="单账号最大翻页数（默认200）")
-    parser.add_argument("--wechat-pages", type=int, default=200,
+    parser.add_argument("--max-pages", type=int, default=500, help="单账号最大翻页数（默认500，仍受每日采集额度限制）")
+    parser.add_argument("--wechat-pages", type=int, default=500,
                         help="每个公众号最多分页数；后台每页10组，官方接口每页最多20组（默认200）")
     parser.add_argument("--resolve-wechat", action="store_true",
                         help="兼容旧参数；账号身份改由登录资料核验，不再搜索")

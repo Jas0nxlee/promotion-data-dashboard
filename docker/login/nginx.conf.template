@@ -6,6 +6,7 @@ pid /tmp/promotion-login-nginx.pid;
 error_log /dev/stderr warn;
 events { worker_connections 256; }
 http {
+    map_hash_bucket_size 128;
     include /etc/nginx/mime.types;
     default_type application/octet-stream;
     access_log off;
@@ -17,14 +18,18 @@ http {
         default upgrade;
         '' close;
     }
-    map $http_origin $desktop_origin_allowed {
+    map $http_host $panel_host_allowed {
         default 0;
-        "@@PANEL_ORIGIN@@" 1;
+@@PANEL_HOSTS@@
+    }
+    map "$http_host|$http_origin" $desktop_origin_allowed {
+        default 0;
+@@DESKTOP_ORIGINS@@
     }
     server {
         listen 18762;
         server_name _;
-        if ($http_host != "@@PANEL_HOST@@") { return 421; }
+        if ($panel_host_allowed = 0) { return 421; }
         auth_basic "Promotion authorization";
         auth_basic_user_file "@@AUTH_FILE@@";
         add_header Cache-Control "no-store" always;

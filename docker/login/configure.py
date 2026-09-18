@@ -19,8 +19,9 @@ def validate_origin(origin):
     return parsed.netloc
 
 
-def render(template, origin, auth_file):
-    host = validate_origin(origin)
+def render(template, origin, auth_file, allowed_origins=""):
+    origins = list(dict.fromkeys([origin, *(item.strip() for item in allowed_origins.split(",") if item.strip())]))
+    hosts = {value: validate_origin(value) for value in origins}
     path = Path(auth_file)
     if not path.is_absolute() or not re.fullmatch(r"[A-Za-z0-9_./-]+", str(path)):
         raise ValueError("PROMOTION_AUTH_FILE 必须是容器内绝对路径")
@@ -32,7 +33,10 @@ def render(template, origin, auth_file):
         raise ValueError("管理员凭证必须是单个有效的 bcrypt htpasswd 条目，成本至少为 10")
     if path.stat().st_mode & 0o077:
         raise ValueError("管理员凭证文件权限必须为 0600")
-    return template.replace("@@PANEL_ORIGIN@@", origin).replace("@@PANEL_HOST@@", host).replace("@@AUTH_FILE@@", str(path))
+    host_map = "\n".join(f'        "{host}" 1;' for host in dict.fromkeys(hosts.values()))
+    origin_map = "\n".join(f'        "{host}|{value}" 1;' for value, host in hosts.items())
+    return (template.replace("@@PANEL_HOSTS@@", host_map)
+            .replace("@@DESKTOP_ORIGINS@@", origin_map).replace("@@AUTH_FILE@@", str(path)))
 
 
 def main():
@@ -40,7 +44,8 @@ def main():
     target = Path("/tmp/promotion-login-nginx.conf")
     value = render((folder / "nginx.conf.template").read_text(),
                    os.environ.get("PROMOTION_PANEL_ORIGIN", "http://127.0.0.1:18762"),
-                   os.environ.get("PROMOTION_AUTH_FILE", "/run/promotion/authorization/admin.htpasswd"))
+                   os.environ.get("PROMOTION_AUTH_FILE", "/run/promotion/authorization/admin.htpasswd"),
+                   os.environ.get("PROMOTION_PANEL_ALLOWED_ORIGINS", ""))
     target.write_text(value)
     target.chmod(0o600)
 

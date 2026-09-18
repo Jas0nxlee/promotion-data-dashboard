@@ -19,7 +19,7 @@ services:
       context: .
       dockerfile: Dockerfile.collector
     environment:
-      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-800}"
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
       PROMOTION_TEST_MODE: "1"
       PROMOTION_RUNTIME_DIR: /isolated
       PROMOTION_DATA_DIR: /app/data
@@ -39,6 +39,31 @@ services:
     command: [python, pipeline/provider_setup.py, status]
     init: true
     shm_size: 1gb
+  session-maintenance:
+    profiles: [session-maintenance]
+    build:
+      context: .
+      dockerfile: Dockerfile.collector
+    command: [python, pipeline/session_maintenance.py]
+    environment:
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
+      PROMOTION_TEST_MODE: "1"
+      PROMOTION_RUNTIME_DIR: /isolated
+      PROMOTION_DATA_DIR: /app/data
+      PROMOTION_SESSION_DIR: /sessions
+      PROMOTION_PROVIDER_CONFIG: /config-private/providers.json
+    volumes:
+      - ./.runtime/local:/isolated
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/sessions
+      - ./.runtime/local/data:/app/data
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /config-private
+        read_only: true
+        bind:
+          create_host_path: false
+    init: true
+    shm_size: 1gb
   login:
     profiles: [login]
     build:
@@ -47,13 +72,15 @@ services:
       additional_contexts:
         collector: service:collector
     ports:
-      - "127.0.0.1:${PROMOTION_LOGIN_PORT:-18762}:18762"
+      - "${PROMOTION_LOGIN_BIND:-127.0.0.1}:${PROMOTION_LOGIN_PORT:-18762}:18762"
     environment:
       PROMOTION_TEST_MODE: "1"
       PROMOTION_LOGIN_MODE: remote
-      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-800}"
+      PROMOTION_AUTHORIZATION_TTL_SECONDS: ${PROMOTION_AUTHORIZATION_TTL_SECONDS:-1800}
+      DATA_DAILY_REQUEST_LIMIT: "${DATA_DAILY_REQUEST_LIMIT:-0}"
       PROMOTION_BROWSER_CHANNEL: chromium
       PROMOTION_PANEL_ORIGIN: ${PROMOTION_PANEL_ORIGIN:-http://127.0.0.1:18762}
+      PROMOTION_PANEL_ALLOWED_ORIGINS: ${PROMOTION_PANEL_ALLOWED_ORIGINS:-}
       PROMOTION_AUTH_FILE: /run/promotion/authorization/admin.htpasswd
       PROMOTION_RUNTIME_DIR: /app/.runtime
       PROMOTION_DATA_DIR: /app/data

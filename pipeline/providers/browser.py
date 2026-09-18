@@ -347,12 +347,12 @@ class BrowserSource:
         finally:
             page.close()
 
-    def get_json(self, url, params=None):
+    def get_json(self, url, params=None, *, min_interval=0.2):
         """Read a verified native GET endpoint using this account's browser cookies."""
         if not allowed(url, self.account["platform"]):
             raise ProviderError("invalid_host", "接口不属于当前平台")
         self.budget.consume(self.account["platform"] + ":" + urlparse(url).path, task="platform_http")
-        interval = max(0.2, float(self.settings.get("request_interval", 0.6)))
+        interval = max(0.2, float(self.settings.get("request_interval", 0.6)), min_interval)
         time.sleep(max(0, interval - (time.monotonic() - self.last_request)))
         self.last_request = time.monotonic()
         self.call_count += 1

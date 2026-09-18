@@ -15,10 +15,13 @@ class BilibiliCreatorProvider:
     def call_count(self):
         return self.browser.call_count
 
-    def _get(self, host, path, params=None):
-        payload = self.browser.get_json(f"https://{host}{path}", params)
+    def _get(self, host, path, params=None, *, min_interval=None):
+        kwargs = {"min_interval": min_interval} if min_interval is not None else {}
+        payload = self.browser.get_json(f"https://{host}{path}", params, **kwargs)
         if payload.get("code") == -101:
             raise ProviderError("session_expired", "B站账号未登录")
+        if path == "/x/v2/reply/up/fulllist" and payload.get("code") == -352:
+            raise ProviderError("rate_limited", "B站评论接口返回业务码 -352，本轮暂停该账号")
         if payload.get("code") != 0 or not isinstance(payload.get("data"), dict):
             raise ProviderError("platform_error", "B站原生接口响应未成功")
         return payload["data"]
@@ -91,13 +94,17 @@ class BilibiliCreatorProvider:
             for page in range(1, max_pages + 1):
                 data = self._get("api.bilibili.com", "/x/v2/reply/up/fulllist",
                                  {"order": 1, "filter": -1, "type": 1, "bvid": bvid,
-                                  "pn": page, "ps": 10, "charge_plus_filter": "false"})
+                                  "pn": page, "ps": 10, "charge_plus_filter": "false"},
+                                 min_interval=2.0)
                 items = data.get("list")
-                total = number(data.get("page", {}).get("total"))
-                if items is None and total == 0:
+                current_total = number(data.get("page", {}).get("total"))
+                if items is None and current_total == 0:
                     items = []
-                if not isinstance(items, list) or total is None:
+                if not isinstance(items, list) or current_total is None:
                     raise ProviderError("schema_changed", "评论清单缺少记录或总数")
+                if total is not None and current_total != total:
+                    raise ProviderError("incomplete_pagination", "评论总数在分页期间改变，本轮不推进状态")
+                total = current_total
                 if total >= 50000:
                     raise ProviderError("coverage_limited", "后台仅展示最近50000条评论，不能声明全量")
                 additions = 0
@@ -119,7 +126,9 @@ class BilibiliCreatorProvider:
                                  "user": member.get("uname", ""), "user_ids": [identifier(member.get("mid"))],
                                  "created_at": timestamp(raw.get("ctime")), "like": number(raw.get("like")),
                                  "reply_count": number(raw.get("rcount")), "source": self.source})
-                if len(seen) >= total:
+                if len(seen) > total:
+                    raise ProviderError("incomplete_pagination", "评论唯一ID数超过声明总数，本轮不推进状态")
+                if len(seen) == total:
                     result = (unique(rows, "comment_id"), page)
                     self._comment_cache[cache_key] = result
                     return result
@@ -130,7 +139,13 @@ class BilibiliCreatorProvider:
     def comments(self, item, max_pages=200, include_replies=True):
         rows, pages = self._all_comments(item, max_pages)
         selected = rows if include_replies else [r for r in rows if not r["parent_comment_id"]]
+        # fulllist includes roots and replies in one creator-visible catalog.
+        # _all_comments returns only after exact, stable total coverage; there is
+        # no independent reply page to count. Root-only output must not certify
+        # delivery of the replies that were intentionally omitted from it.
         return selected, {"root_pages": pages, "reply_pages": 0, "comments": len(selected),
+                          "comments_complete": True, "replies_complete": include_replies is True,
+                          "expected_replies": sum(bool(r["parent_comment_id"]) for r in rows),
                           "coverage": "creator_visible_comments_and_replies"}
 
     def replies(self, item, root_id, max_pages=200):

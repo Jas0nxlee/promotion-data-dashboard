@@ -16,6 +16,7 @@ from snapshot_utils import atomic_write_json
 
 
 from runtime import DATA, is_test, load_env as load_dotenv
+from comment_notifications import NotificationStore, effective_rule
 ROOT = Path(__file__).resolve().parent.parent
 ALERT_PATH = DATA / "comment_alert.json"
 
@@ -108,8 +109,60 @@ def make_message(item: dict, from_addr: str) -> EmailMessage:
     return message
 
 
+def reconcile_pending(payload: dict, rules: dict) -> bool:
+    """Apply account changes before SMTP, including mail queued before an opt-out."""
+    from comment_monitor import build_mail, load_recipient_map
+    recipients, _ = load_recipient_map()
+    refreshed = []
+    unmapped = list(payload.get("unmapped", []))
+    for queued in payload.get("emails", []):
+        items = queued.get("new_items")
+        if not isinstance(items, list) or not items:
+            if rules:
+                unmapped.append({"reason": "legacy_mail_unattributed", "queued_mail": queued})
+            else:
+                refreshed.append(queued)
+            continue
+        if not rules and any(not (item.get("account_key") or (item.get("platform") and item.get("account_name")))
+                             for item in items):
+            refreshed.append(queued)
+            continue
+        groups = {}
+        for item in items:
+            platform = item.get("platform", "")
+            account_key = item.get("account_key") or (
+                f"{platform}:{item['account_name']}" if platform and item.get("account_name") else "")
+            if not account_key:
+                unmapped.append({"reason": "missing_account_key", "item": item})
+                continue
+            recipient = effective_rule(account_key, platform, rules, recipients)
+            if recipient["mode"] == "disabled":
+                continue
+            if not recipient["email"]:
+                unmapped.append(item)
+                continue
+            route = (account_key, recipient["email"], recipient["owner"])
+            groups.setdefault(route, []).append(item)
+        for index, ((account_key, email, owner), batch) in enumerate(groups.items()):
+            subject, body = build_mail(batch)
+            if queued.get("batch_total", 1) > 1:
+                subject += f"（{queued.get('batch_index', 1)}/{queued['batch_total']}）"
+            mail_id = queued.get("id") if len(groups) == 1 else f"{queued.get('id', 'legacy')}:{index}"
+            refreshed.append({**queued, "id": mail_id,
+                              "account_key": account_key, "to": email, "owner": owner,
+                              "subject": subject, "body": body, "new_items": batch,
+                              "platforms": sorted({item.get("platform_label") or item.get("platform", "")
+                                                   for item in batch})})
+    changed = refreshed != payload.get("emails", []) or unmapped != payload.get("unmapped", [])
+    payload["emails"] = refreshed
+    payload["unmapped"] = unmapped
+    return changed
+
+
 def send_pending(path: Path, config: dict) -> int:
     payload = load_queue(path)
+    if reconcile_pending(payload, NotificationStore().read()):
+        save_queue(path, payload)
     pending = payload.get("emails", [])
     if not pending:
         print("没有待发送邮件。")

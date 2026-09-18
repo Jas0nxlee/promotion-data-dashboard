@@ -202,12 +202,37 @@ class BaijiahaoCreatorProvider:
         self.verified_profile = profile
         return profile
 
+    def _catalog_page(self, current, expected_total, expected_pages):
+        # The creator UI can transiently return errno=0 with an empty 0/0
+        # catalog in the middle of a nonempty scan. Re-read only that exact
+        # anomaly, through normal UI navigation and the shared request budget.
+        # Authentication, HTTP and schema failures still propagate immediately.
+        for attempt in range(3):
+            data = self.browser.catalog_page(current)
+            paging = data.get('page')
+            anomalous_empty = (expected_total is not None and expected_total > 0
+                and current <= expected_pages and isinstance(paging, dict)
+                and number(paging.get('currentPage')) == current
+                and number(paging.get('pageSize')) == 10
+                and number(paging.get('totalCount')) == 0
+                and number(paging.get('totalPage')) == 0 and data.get('list') == [])
+            if not anomalous_empty:
+                return data, attempt
+            if attempt == 2:
+                raise ProviderError('incomplete_pagination',
+                    f'百家号第 {current} 页连续 3 次返回异常空目录（预期 {expected_total} 条/{expected_pages} 页）；未跳页，原数据保留，请稍后重试')
+            time.sleep((2, 5)[attempt])
+            self._profile()  # An account switch or expired session must stop retries.
+
     def collect(self, max_pages=200, discovery=False):
         records, seen, total, total_pages, complete = [], set(), None, None, False
+        retried_pages = []
         with self.browser.session():
             profile = self._profile()
             for current in range(1, max(1, 1 if discovery else max_pages) + 1):
-                data = self.browser.catalog_page(current)
+                data, retries = self._catalog_page(current, total, total_pages)
+                if retries:
+                    retried_pages.append({'page': current, 'retries': retries})
                 paging, rows = data.get('page'), data.get('list')
                 if not isinstance(paging, dict) or not isinstance(rows, list):
                     raise ProviderError('schema_changed', '百家号目录缺少记录或分页结构')
@@ -234,7 +259,7 @@ class BaijiahaoCreatorProvider:
             after = self._profile()
             if after['verified_account_id'] != profile['verified_account_id']:
                 raise ProviderError('identity_mismatch', '百家号登录身份在分页期间变化')
-        profile.update(total=total, published_graphic_pages=total_pages,
+        profile.update(total=total, published_graphic_pages=total_pages, retried_catalog_pages=retried_pages,
                        scope='published_news_only')
         note = (f'已发布图文覆盖 {len(records)}/{total}；排除视频、动态、草稿及非发布内容；'
                 '逐篇指标来自作品管理展示总量，未指定7/30天时间窗')

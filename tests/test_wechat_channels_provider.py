@@ -53,6 +53,7 @@ def provider(responses):
     result = WeChatChannelsProvider(ACCOUNT, dict(SETTINGS), source)
     result._profile = Mock(return_value={"nickname": "测试", "verified_account_id": "sphIexample"})
     result._request_template = Mock(return_value=(Mock(), {"_log_finder_id": "v2_owner@finder"}))
+    result._video_catalog_total = Mock(return_value=2)
     return result, source
 
 
@@ -68,10 +69,34 @@ class ChannelsProviderTests(unittest.TestCase):
         self.assertEqual([1, 2], [args[1]["currentPage"] for args in source.calls])
         self.assertTrue(all(args[0] == POST_PATH and args[1]["pageSize"] == 20 and args[1]["stickyOrder"] is True for args in source.calls))
 
-    def test_homepage_total_prevents_false_complete_small_result(self):
+    def test_video_management_total_prevents_false_complete_preview_result(self):
         p, _ = provider([{"errCode": 0, "data": {"list": [{"objectId": "export/one"}], "totalCount": 1, "continueFlag": False}}])
         p._profile.return_value["homepage_total"] = 103
+        p._video_catalog_total.return_value = 103
         self.assertFalse(p.collect().complete)
+
+    def test_homepage_includes_image_posts_but_video_catalog_is_complete(self):
+        p, _ = provider([{"errCode": 0, "data": {"list": [{"objectId": "export/one"}], "totalCount": 1, "continueFlag": False}}])
+        p._profile.return_value["homepage_total"] = 7
+        p._video_catalog_total.return_value = 1
+        result = p.collect()
+        self.assertTrue(result.complete)
+        self.assertEqual(7, result.profile["homepage_total"])
+        self.assertEqual(1, result.profile["video_catalog_total"])
+
+    def test_video_total_change_during_pagination_does_not_certify_coverage(self):
+        p, _ = provider([
+            {"errCode": 0, "data": {"list": [{"objectId": "export/one"}], "totalCount": 2, "continueFlag": True}},
+            {"errCode": 0, "data": {"list": [{"objectId": "export/two"}], "totalCount": 3, "continueFlag": False}}])
+        with self.assertRaisesRegex(ProviderError, "incomplete_pagination"):
+            p.collect()
+
+    def test_missing_video_management_evidence_does_not_fall_back_to_home(self):
+        p, source = provider([])
+        p._video_catalog_total.side_effect = ProviderError("schema_changed", "missing tab")
+        with self.assertRaisesRegex(ProviderError, "schema_changed"):
+            p.collect()
+        self.assertFalse(source.calls)
 
     def test_opaque_ids_and_metrics_keep_their_actual_meaning(self):
         row = video_record({"objectId": "export/opaque", "createTime": 1788220860,
@@ -106,6 +131,9 @@ class ChannelsProviderTests(unittest.TestCase):
         self.assertEqual({"r1", "r2", "c1", "c2", "c3"}, {r["comment_id"] for r in rows})
         self.assertEqual(2, stats["root_pages"])
         self.assertEqual(1, stats["reply_pages"])
+        self.assertTrue(stats["comments_complete"])
+        self.assertTrue(stats["replies_complete"])
+        self.assertEqual(3, stats["expected_replies"])
         self.assertEqual("r1", source.calls[1][1]["rootCommentId"])
         self.assertEqual("root-next", source.calls[2][1]["lastBuff"])
         self.assertEqual({COMMENTS}, {path for path, _ in source.calls})
@@ -113,7 +141,9 @@ class ChannelsProviderTests(unittest.TestCase):
     def test_no_replies_skips_extra_thread_requests_but_exposes_unknown_count(self):
         r1 = comment("r1", children=[comment("c1")], more=1, cursor="next")
         p, source = provider([response([r1], total=3), response([comment("c2")])])
-        roots, _ = p.comments({"content_id": "export/v1"}, include_replies=False)
+        roots, stats = p.comments({"content_id": "export/v1"}, include_replies=False)
+        self.assertTrue(stats["comments_complete"])
+        self.assertFalse(stats["replies_complete"])
         self.assertEqual(1, len(source.calls))
         self.assertTrue(roots[0]["reply_count_is_lower_bound"])
         replies, used = p.replies({"content_id": "export/v1"}, "r1")
@@ -126,6 +156,21 @@ class ChannelsProviderTests(unittest.TestCase):
         p, _ = provider([response([comment("r1")], total=2, more=1, cursor="")])
         with self.assertRaisesRegex(ProviderError, "incomplete_pagination"):
             p.comments({"content_id": "export/v1"})
+        self.assertEqual({}, p._comments)
+
+    def test_complete_empty_comments_allow_authorization_without_invented_replies(self):
+        p, _ = provider([response([], total=0)])
+        rows, stats = p.comments({"content_id": "export/v1"})
+        self.assertEqual([], rows)
+        self.assertTrue(stats["comments_complete"])
+        self.assertTrue(stats["replies_complete"])
+        self.assertEqual(0, stats["expected_replies"])
+
+    def test_truncated_reply_pages_never_return_complete_evidence(self):
+        p, _ = provider([response([comment("r1", more=1, cursor="next")], total=3),
+                         response([comment("c1")], more=1, cursor="next-again")])
+        with self.assertRaisesRegex(ProviderError, "incomplete_replies"):
+            p.comments({"content_id": "export/v1"}, max_pages=1)
         self.assertEqual({}, p._comments)
 
     def test_total_mismatch_does_not_advance(self):

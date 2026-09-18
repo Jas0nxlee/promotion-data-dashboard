@@ -5,6 +5,7 @@ from pathlib import Path
 import sys
 from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'pipeline'))
 from fetch_article_data import CsdnCollector,ElecfansCollector
@@ -51,6 +52,40 @@ class ElecHttp:
 
 
 class CsdnPublicTests(unittest.TestCase):
+    def test_transient_http_521_retries_same_page_and_still_checks_full_directory(self):
+        first=[blog(i) for i in range(1,101)]
+        second=[blog(i) for i in range(101,201)]
+        final=[blog(201)]
+        class Transient(CsdnHttp):
+            def __init__(self):
+                super().__init__([csdn_page(first,201),csdn_page(second,201),csdn_page(final,201)])
+                self.calls=[];self.last_call=0
+            def get_json(self,*args,**kwargs):
+                number=kwargs['params']['page'];self.calls.append(number)
+                if number==3 and self.calls.count(3)==1:
+                    raise RuntimeError('请求失败: HTTP 521')
+                return self.pages.pop(0)
+        source=Transient()
+        with patch('fetch_article_data.time.sleep') as sleep:
+            entry,rows=CsdnCollector(source,3).collect(CSDN)
+        self.assertEqual('ok',entry['status']);self.assertEqual(201,len(rows))
+        self.assertEqual([1,2,3,3],source.calls)
+        self.assertTrue(sleep.called)
+
+    def test_non_521_failure_does_not_retry_or_claim_full_coverage(self):
+        first=[blog(i) for i in range(1,101)]
+        class Forbidden(CsdnHttp):
+            def __init__(self):super().__init__([csdn_page(first,101)]);self.calls=[]
+            def get_json(self,*args,**kwargs):
+                number=kwargs['params']['page'];self.calls.append(number)
+                if number==2:raise RuntimeError('请求失败: HTTP 403')
+                return self.pages.pop(0)
+        source=Forbidden()
+        with patch('fetch_article_data.time.sleep'):
+            entry,rows=CsdnCollector(source,3).collect(CSDN)
+        self.assertEqual('partial',entry['status']);self.assertEqual(100,len(rows))
+        self.assertEqual([1,2],source.calls)
+
     def test_success_has_verified_identity_and_source(self):
         e,rows=CsdnCollector(CsdnHttp(),2).collect(CSDN)
         self.assertEqual('ok',e['status']);self.assertEqual('ANSILIC',e['verified_account_id'])

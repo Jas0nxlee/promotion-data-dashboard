@@ -199,12 +199,14 @@ class XiaohongshuProvider:
         page.on("response", receive)
         roots, children, cursors = {}, {}, set()
         root_pages = reply_pages = 0
+        root_end_reached = False
         try:
             action("comments")
             page.goto(url, wait_until="domcontentloaded", timeout=timeout)
             for index in range(max_pages):
                 data = take(COMMENTS)
                 root_pages += 1
+                root_end_reached = data["has_more"] is False
                 added = 0
                 for raw in data["comments"]:
                     row = comment_record(raw, cid)
@@ -275,7 +277,15 @@ class XiaohongshuProvider:
                     if not match or int(match[1]) != covered:
                         expected = match[1] if match else "未知"
                         raise ProviderError("coverage_limited", f"评论及回复计数{covered}与页面总数{expected}不一致，不能声明全量")
+            # These flags describe the whole note, not a targeted reply thread.
+            # Reaching here also proves the empty-state/DOM total check and, when
+            # requested, each root's reply end marker plus exact reply count.
+            comments_complete = not only_root and root_end_reached
             return rows, {"root_pages": root_pages, "reply_pages": reply_pages, "comments": len(rows),
-                          "coverage": "authenticated_visible_comments_and_replies" if include_replies else "authenticated_visible_roots"}
+                          "comments_complete": bool(comments_complete),
+                          "replies_complete": bool(comments_complete and include_replies),
+                          "expected_replies": sum(row["reply_count"] for row, raw in roots.values()) if comments_complete else None,
+                          "coverage": "authenticated_visible_reply_thread" if only_root else
+                          "authenticated_visible_comments_and_replies" if include_replies else "authenticated_visible_roots"}
         finally:
             page.close()

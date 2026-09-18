@@ -49,7 +49,22 @@ ssh -L 18762:127.0.0.1:18762 operator@server
 
 然后访问本机同一地址。若要经已有 HTTPS 反向代理提供访问，外层需保留浏览器原始 Host、Origin 和 WebSocket 升级头，并将 `PROMOTION_PANEL_ORIGIN` 设置为浏览器实际访问的完整 origin。不要直接发布 VNC、websockify、CDP 或内部面板端口。
 
-## 隔离本地开发
+## 局域网访问授权管理
+
+将授权网关绑定到所有主机网卡，并配置浏览器实际使用的地址。例如服务器局域网 IP 为 `10.0.1.13`：
+
+```sh
+PROMOTION_LOGIN_BIND=0.0.0.0 \
+PROMOTION_PANEL_ORIGIN=http://10.0.1.13:18762 \
+PROMOTION_PANEL_ALLOWED_ORIGINS=http://127.0.0.1:18762,http://localhost:18762 \
+  docker compose --env-file /dev/null --profile login up -d --no-deps login
+```
+
+如使用独立本地 Compose，在 `docker compose` 后增加 `-f docker-compose.local.yml`，并保留该环境使用的目录覆盖变量。持久部署可把三个变量写入本部署的环境配置。IP 变化后同步修改 `PROMOTION_PANEL_ORIGIN` 并重新创建 login 服务。
+
+同一局域网设备访问 `http://10.0.1.13:18762/`，使用原管理员凭证。`PROMOTION_PANEL_ALLOWED_ORIGINS` 是逗号分隔的精确地址别名，不支持通配符；Host、Origin、CSRF 和 WebSocket 同源校验继续生效。本机别名可选。只有网关端口对外开放，VNC、CDP、内部面板继续仅绑定容器回环地址。
+
+## 隔离本地开发环境
 
 `docker-compose.local.yml` 是独立文件，不与生产 Compose 合并。指定唯一项目名后，仅启动其登录服务：
 
@@ -68,8 +83,11 @@ PROMOTION_DEV_ID=promotion-my-login \
 | `PROMOTION_SESSIONS_DIR` | `./.runtime/sessions` |
 | `PROMOTION_AUTH_DIR` | `./.runtime/authorization` |
 | `PROMOTION_LOGIN_RUNTIME_DIR` | 生产 `./.runtime/login-runtime`；本地 `./.runtime/local/login-runtime` |
-| `PROMOTION_LOGIN_PORT` | `18762`，始终绑定 `127.0.0.1` |
+| `PROMOTION_LOGIN_PORT` | `18762` |
+| `PROMOTION_LOGIN_BIND` | 默认 `127.0.0.1`；局域网访问设置 `0.0.0.0` 或主机局域网 IP |
 | `PROMOTION_PANEL_ORIGIN` | `http://127.0.0.1:18762` |
+| `PROMOTION_PANEL_ALLOWED_ORIGINS` | 默认空；逗号分隔的其它精确访问地址 |
+| `PROMOTION_AUTHORIZATION_TTL_SECONDS` | 默认 `1800`；大历史账号可临时设为 `3600`，范围300至3600秒 |
 
 修改外部端口时，同时修改 `PROMOTION_PANEL_ORIGIN`。Origin 必须与浏览器地址完全一致，不带路径、尾部斜杠或凭证。
 

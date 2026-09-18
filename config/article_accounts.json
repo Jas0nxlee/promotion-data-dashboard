@@ -165,6 +165,7 @@
       "collector": "toutiao",
       "provided_id": "1361637085287179",
       "platform_uid": "1361637085287179",
+      "expected_media_id": "1866310957476868",
       "profile_url": "https://www.toutiao.com/c/user/1361637085287179/",
       "note": "今日头条公开作者页浏览器直采；动态解析作者 token、账号指标与文章列表"
     },

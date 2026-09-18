@@ -22,6 +22,7 @@
 用法:
     python pipeline/comment_monitor.py                # 全量检查一次
     python pipeline/comment_monitor.py --dry-run      # 只检查不发邮件
+    python pipeline/comment_monitor.py --no-notifications  # 采集并保存状态，不生成邮件队列
     python pipeline/comment_monitor.py --limit 5      # 可选：每账号只看最近 5 条内容
     python pipeline/comment_monitor.py --platform bilibili   # 只检查指定平台
 
@@ -48,6 +49,7 @@ from api_budget import ApiBudget, ApiBudgetExceeded
 import comment_timeline as timeline_store
 
 from runtime import DATA, load_env as load_dotenv
+from comment_notifications import NotificationStore, effective_rule
 from providers import ProviderRegistry
 ROOT = Path(__file__).resolve().parent.parent
 DATA_DIR = DATA
@@ -59,6 +61,7 @@ ARTICLE_ACCOUNTS = ROOT / "config" / "article_accounts.json"
 
 CN_TZ = timezone(timedelta(hours=8))
 MONITOR_STATE_VERSION = 2
+DEFAULT_MAX_AGE_DAYS = 90
 
 # 收件人邮箱（可按需修改）
 DEFAULT_RECIPIENT = "shangyinan@ucas.com.cn"
@@ -741,6 +744,7 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
             key=lambda value: value.get("published_at") or "", reverse=True)
 
     platform_filter = set(args.platform or [])
+    selected_ids = set(getattr(args, "content_id", None) or [])
     total_new = 0
     stop_for_budget = False
 
@@ -753,7 +757,10 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
         if platform_filter and platform not in platform_filter \
                 and label not in platform_filter and account_key not in platform_filter:
             continue
-        recent = items if args.limit <= 0 else items[: args.limit]
+        matching = [item for item in items if not selected_ids or item["content_id"] in selected_ids]
+        if not matching:
+            continue
+        recent = matching if args.limit <= 0 else matching[: args.limit]
         scope_text = "全部" if args.limit <= 0 else "最近"
         print(f">>> {label} / {account_name}：候选{scope_text} {len(recent)} 条内容")
 
@@ -872,6 +879,9 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                     stop_for_budget = True
                 except Exception as exc:
                     errors.append(f"{label} {cid}: {compact_error(exc, 120)}")
+                    if getattr(exc, "reason", None) == "rate_limited":
+                        print(f"    [warn] {label} / {account_name}：平台拒绝继续读取，本轮停止此账号", file=sys.stderr)
+                        break
             elif platform in COMMENT_API_PLATFORMS \
                     and not (getattr(args, "dry_run", False)
                              or getattr(args, "no_api", False)):
@@ -1295,16 +1305,22 @@ def write_alerts(new_items):
     if not new_items:
         return [], 0
     recipient_map, _fallback = load_recipient_map()
+    notification_rules = NotificationStore().read()
 
-    groups = {}      # email -> {owner, platforms:set, items:[]}
+    groups = {}      # (account, email) -> {owner, platforms:set, items:[]}
     unmapped = []
     for item in new_items:
         platform = item.get("platform", "")
-        email, owner, mapped = resolve_recipient(platform, recipient_map)
-        if not mapped:
+        account_key = item.get("account_key") or (
+            f"{platform}:{item['account_name']}" if platform and item.get("account_name") else "")
+        recipient = effective_rule(account_key, platform, notification_rules, recipient_map)
+        if recipient["mode"] == "disabled":
+            continue
+        email, owner = recipient["email"], recipient["owner"]
+        if not email:
             unmapped.append(item)
             continue
-        g = groups.setdefault(email, {"owner": owner,
+        g = groups.setdefault((account_key, email), {"owner": owner,
                                       "platforms": set(), "items": []})
         g["platforms"].add(item.get("platform_label", "") or platform)
         g["items"].append(item)
@@ -1333,7 +1349,7 @@ def write_alerts(new_items):
 
     max_events = max(1, int(os.environ.get("COMMENT_EMAIL_MAX_EVENTS", "100")))
     emails = []
-    for email, g in groups.items():
+    for (account_key, email), g in groups.items():
         batches = split_batches(g["items"], max_events)
         for index, batch in enumerate(batches, start=1):
             subject, body = build_mail(batch)
@@ -1341,6 +1357,7 @@ def write_alerts(new_items):
                 subject += f"（{index}/{len(batches)}）"
             emails.append({
                 "to": email,
+                "account_key": account_key,
                 "owner": g["owner"],
                 "subject": subject,
                 "body": body,
@@ -1392,6 +1409,8 @@ def main():
     ap = argparse.ArgumentParser(description="评论监控与邮件提醒")
     ap.add_argument("--dry-run", action="store_true",
                     help="只检查并打印结果，不写入提醒文件、不调用API（仅本地对比）")
+    ap.add_argument("--no-notifications", action="store_true",
+                    help="正常采集并保存评论、回复和时间线，但不生成或追加邮件队列")
     ap.add_argument("--limit", type=int, default=0,
                     help="每个账号检查最近 N 条内容；0 表示全部（默认 0）")
     ap.add_argument("--max-pages", type=int, default=200,
@@ -1402,9 +1421,11 @@ def main():
                     help="不在评论任务中检查各账号最新一页内容")
     ap.add_argument("--platform", action="append",
                     help="只检查指定平台或 platform:account_name（可重复），如 --platform douyin:望获OS")
+    ap.add_argument("--content-id", action="append",
+                    help="只检查指定的稳定内容ID（可重复）；需同时指定 --platform 和 --no-discovery")
     ap.add_argument("--recipient", default=DEFAULT_RECIPIENT, help="收件人邮箱")
-    ap.add_argument("--max-age-days", type=int, default=0,
-                    help="只看最近 N 天内发布的内容；0 表示全部（默认 0）")
+    ap.add_argument("--max-age-days", type=int, default=DEFAULT_MAX_AGE_DAYS,
+                    help=f"只看最近 N 天内发布的内容；0 表示全部（默认 {DEFAULT_MAX_AGE_DAYS}）")
     ap.add_argument("--fresh-days", type=int, default=7,
                     help="新内容分层天数（默认 7）")
     ap.add_argument("--recent-days", type=int, default=30,
@@ -1423,6 +1444,8 @@ def main():
     ap.add_argument("--no-api", action="store_true",
                     help="不调用 平台评论数据源，仅做评论数对比（无正文）")
     args = ap.parse_args()
+    if args.content_id and (not args.platform or not args.no_discovery):
+        ap.error("--content-id 需同时指定 --platform 和 --no-discovery")
 
     load_dotenv()
     now = datetime.now(CN_TZ)
@@ -1487,8 +1510,9 @@ def main():
         state["baseline_done"] = True
         state["baseline_at"] = datetime.now(CN_TZ).isoformat()
         save_runtime()
+        reminder = "并邮件提醒" if not args.no_notifications else "（邮件提醒已关闭）"
         print("\n[首次运行] 已记录现有评论作为基线，"
-              "从下一次运行开始检测新评论并邮件提醒。")
+              f"从下一次运行开始检测新评论{reminder}。")
         print(f"  基线记录内容数：{len(state.get('seen_comments', {}))} 条")
         if errors:
             raise SystemExit(2)
@@ -1509,6 +1533,9 @@ def main():
             subject, body = build_mail(new_items)
             print("主题：", subject)
             print(body)
+        elif args.no_notifications:
+            save_runtime()
+            print("\n已保存评论状态和时间线；本轮未生成邮件提醒。")
         else:
             # 时间线先落盘；待发队列成功后再推进评论状态。
             timeline_store.save_timeline(
