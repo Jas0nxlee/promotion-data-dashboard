@@ -16,6 +16,7 @@ const state = { platform: "all", account: "all", status: "all", period: "all", p
 let DATA = null;
 let THREADS = [];
 let usageChart = null;
+let refreshing = false;
 
 const $ = (id) => document.getElementById(id);
 
@@ -141,7 +142,7 @@ function renderKpis(threads) {
   const cards = [
     ["新增评论", metrics.comments, "上线后已记录", "#38d9f5"],
     ["已官方回复", metrics.replied, `${metrics.replies} 条官方回复`, "#34d399"],
-    ["待回复", metrics.pending, "按当前筛选", "#f5c34d"],
+    ["未检测到官方回复", metrics.pending, "以最近一次检查为准", "#f5c34d"],
     ["官方回复率", `${(metrics.rate * 100).toFixed(0)}%`, `${metrics.replied}/${metrics.comments || 0}`, "#a78bfa"],
     ["响应中位数", formatDuration(metrics.median), `${Number.isFinite(metrics.p90) ? `P90 ${formatDuration(metrics.p90)}` : "暂无有效样本"}`, "#60a5fa"],
     ["今日采集操作", usage.used ?? 0, dailyLimitLabel(usage.limit), "#f87171"],
@@ -218,7 +219,7 @@ function renderTimeline(threads) {
         <span class="tag tag-line">${esc(comment.account_name)}</span>
         ${url ? `<a class="thread-title" href="${url}" target="_blank" rel="noopener" title="${esc(comment.content_title)}">${esc(comment.content_title || "未命名内容")}</a>`
           : `<span class="thread-title">${esc(comment.content_title || "未命名内容")}</span>`}
-        <span class="reply-status ${thread.replied ? "replied" : ""}">${thread.replied ? "已官方回复" : "待回复"}</span>
+        <span class="reply-status ${thread.replied ? "replied" : ""}">${thread.replied ? "已官方回复" : "尚未检测到官方回复"}</span>
       </div>
       <div class="event-block">
         <div class="event-meta"><strong>${esc(comment.author)}</strong>评论时间<br>${esc(shortTime(comment.platform_created_at))}<br>发现 ${esc(shortTime(comment.first_seen_at))}</div>
@@ -230,7 +231,7 @@ function renderTimeline(threads) {
           <time>${esc(formatTime(reply.platform_created_at))}</time>
           <span class="response-chip">响应 ${esc(formatDuration(reply.response_seconds))}</span>
           <p>${esc(reply.content || "(无文字内容)")}</p>
-        </div>`).join("")}</div>` : `<div class="pending-note">尚未检测到该账号的官方回复</div>`}
+        </div>`).join("")}</div>` : `<div class="pending-note">最近检查：${esc(formatTime(comment.last_seen_at))}。尚未检测到该账号的官方回复，平台可能已有更新。</div>`}
     </article>`;
   }).join("") || `<div class="timeline-empty"><strong>当前筛选下暂无互动</strong><span>时间线只记录功能上线后且具有平台时间戳的新评论。</span></div>`;
   $("pager").innerHTML = `<span>共 ${threads.length} 条 · ${state.page}/${pages} 页</span>
@@ -257,7 +258,7 @@ function exportData() {
       thread.comment.platform_label, thread.comment.business_line, thread.comment.account_name,
       thread.comment.content_title, thread.comment.author, thread.comment.content,
       thread.comment.platform_created_at, thread.comment.first_seen_at,
-      thread.replied ? "已官方回复" : "待回复", reply?.author || "", reply?.content || "",
+      thread.replied ? "已官方回复" : "尚未检测到官方回复", reply?.author || "", reply?.content || "",
       reply?.platform_created_at || "", reply?.response_seconds ?? "", thread.comment.content_url || "",
     ]);
   });
@@ -278,10 +279,12 @@ function exportData() {
   setTimeout(() => { button.textContent = "导出数据"; button.disabled = false; }, 1500);
 }
 
-function populateFilters() {
+function populateFilters(bindEvents = true) {
   const platforms = [...new Set(THREADS.map((thread) => thread.comment.platform))];
+  if (!platforms.includes(state.platform)) state.platform = "all";
   $("fPlatform").innerHTML = `<option value="all">全部平台</option>` + platforms.map((platform) =>
     `<option value="${esc(platform)}">${esc(PLATFORM_LABEL[platform] || platform)}</option>`).join("");
+  $("fPlatform").value = state.platform;
 
   const rebuildAccounts = () => {
     const accounts = new Map();
@@ -295,6 +298,8 @@ function populateFilters() {
     if (!accounts.has(state.account)) state.account = "all";
     $("fAccount").value = state.account;
   };
+  rebuildAccounts();
+  if (!bindEvents) return;
 
   $("fPlatform").addEventListener("change", (event) => {
     state.platform = event.target.value; state.account = "all"; state.page = 1;
@@ -320,37 +325,57 @@ function populateFilters() {
 function render() {
   const threads = filteredThreads();
   const metrics = threadMetrics(threads);
-  $("filterSummary").textContent = `${threads.length} 条评论 · ${metrics.replied} 条已回复 · ${metrics.pending} 条待回复`;
+  $("filterSummary").textContent = `${threads.length} 条评论 · ${metrics.replied} 条已回复 · ${metrics.pending} 条尚未检测到官方回复`;
   renderKpis(threads);
   renderTimeline(threads);
   requestAnimationFrame(() => usageChart?.resize());
 }
 
 async function loadData() {
-  const response = await fetch(`data/comment_timeline.json?_=${Date.now()}`, { cache: "no-store" });
-  if (response.status === 404) {
-    return { events: [], stats: {}, api_usage: {}, last_scan: {}, provenance: {} };
-  }
-  if (!response.ok) throw new Error(`时间线数据加载失败: ${response.status}`);
-  return response.json();
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(`data/comment_timeline.json?_=${Date.now()}`, { cache: "no-store", signal: controller.signal });
+    if (response.status === 404) {
+      if (DATA) throw new Error("时间线暂时不可用");
+      return { events: [], stats: {}, api_usage: {}, last_scan: {}, provenance: {} };
+    }
+    if (!response.ok) throw new Error(`时间线数据加载失败: ${response.status}`);
+    const data = await response.json();
+    if (!data || !Array.isArray(data.events)) throw new Error("时间线数据格式错误");
+    return data;
+  } finally { clearTimeout(timeout); }
+}
+
+async function refreshData(initial = false) {
+  if (refreshing) return;
+  refreshing = true;
+  try {
+    DATA = await loadData();
+    THREADS = buildThreads(DATA.events);
+    $("updatedAt").textContent = DATA.updated_at ? formatTime(DATA.updated_at) : "待初始化";
+    const badge = $("sourceBadge");
+    badge.textContent = DATA.timeline_started_at ? "上线后数据" : "待首次检查";
+    badge.classList.toggle("partial", !DATA.timeline_started_at);
+    renderStatus();
+    renderBudget();
+    renderUsageChart();
+    populateFilters(initial);
+    render();
+    $("refreshStatus").textContent = "页面每 60 秒自动同步 · 评论与回复状态以各条记录的最近检查为准";
+  } catch (error) {
+    if (initial) throw error;
+    $("refreshStatus").textContent = "自动同步失败，当前保留上次数据；将在下次自动重试。";
+  } finally { refreshing = false; }
 }
 
 async function main() {
-  DATA = await loadData();
-  DATA.events = Array.isArray(DATA.events) ? DATA.events : [];
-  THREADS = buildThreads(DATA.events);
-  $("updatedAt").textContent = DATA.updated_at ? formatTime(DATA.updated_at) : "待初始化";
-  const badge = $("sourceBadge");
-  badge.textContent = DATA.timeline_started_at ? "上线后数据" : "待首次检查";
-  if (!DATA.timeline_started_at) badge.classList.add("partial");
+  await refreshData(true);
   const updateClock = () => { $("clock").textContent = new Date().toLocaleTimeString("zh-CN", { hour12: false }); };
   updateClock();
   setInterval(updateClock, 1000);
-  renderStatus();
-  renderBudget();
-  renderUsageChart();
-  populateFilters();
-  render();
+  setInterval(() => refreshData(), 60000);
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshData(); });
   window.addEventListener("resize", () => usageChart?.resize());
 }
 

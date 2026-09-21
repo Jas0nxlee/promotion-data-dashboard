@@ -13,7 +13,7 @@
   1. 从大屏数据 JSON（data/dashboard_data.json + data/article_dashboard_data.json）
      读取各账号的内容清单（作品/文章 + 平台 + 内容ID）。
   2. 按配置周期读取四个明细平台的最新一页作品。
-  3. 按作品年龄分层检查一级评论；仅在 reply_count 增长时查询回复详情。
+  3. 尚未检测到官方回复的评论每轮复查；其余作品按年龄分层并按回复数增长补查。
      只记录功能上线后的新评论与稳定用户 ID 匹配的官方回复。
   4. 仅计数的平台：对比每日大屏快照中的评论数字，增长即提醒。
   5. 有新增评论时，写入待发邮件队列，由 send_comment_alerts.py 发送。
@@ -559,6 +559,16 @@ def content_is_due(item, state, args, *, now=None) -> bool:
     return now - last >= timedelta(hours=content_poll_hours(item, args, now=now))
 
 
+def pending_reply_threads(timeline):
+    """Account/content-scoped roots without an observed official reply."""
+    events = (timeline or {}).get("events", {}).values()
+    answered = {(e.get("account_key"), e.get("platform"), e.get("parent_comment_id"))
+                for e in events if e.get("event_type") == "official_reply"}
+    return {(e.get("account_key"), e.get("platform"), e.get("content_id"), e.get("comment_id"))
+            for e in events if e.get("event_type") == "comment"
+            and (e.get("account_key"), e.get("platform"), e.get("comment_id")) not in answered}
+
+
 def discovery_is_due(state, args, *, now=None) -> bool:
     if getattr(args, "no_discovery", False):
         return False
@@ -708,7 +718,7 @@ def comment_created_after(comment, started_at):
 
 def check_comments(client, contents, args, *, state=None, timeline=None,
                    official_identities=None, now=None):
-    """执行一轮分层评论检查，仅在回复数增长时查询二级回复。"""
+    """未检测到官方回复的评论每轮复查，其余内容按年龄分层。"""
     state = state if isinstance(state, dict) else load_state()
     timeline = timeline if isinstance(timeline, dict) else None
     official_identities = official_identities or {}
@@ -724,6 +734,8 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
     count_origins = state.get("content_count_origins", {})
     poll_at = state.get("content_poll_at", {})
     reply_counts = state.get("root_reply_counts", {})
+    pending_threads = pending_reply_threads(timeline) if not args.no_replies else set()
+    pending_contents = {thread[:3] for thread in pending_threads}
     full_scan_baselines = set(state.get("full_scan_baselines", []))
     new_items = []
     errors = []
@@ -761,6 +773,9 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
         if not matching:
             continue
         recent = matching if args.limit <= 0 else matching[: args.limit]
+        if args.limit > 0:
+            recent += [item for item in matching[args.limit:]
+                       if (account_key, platform, item["content_id"]) in pending_contents]
         scope_text = "全部" if args.limit <= 0 else "最近"
         print(f">>> {label} / {account_name}：候选{scope_text} {len(recent)} 条内容")
 
@@ -771,7 +786,8 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
             key_of_cid = f"{platform}:{cid}"
 
             if platform in COMMENT_API_PLATFORMS and client:
-                if not content_is_due(item, state, args, now=now):
+                if ((account_key, platform, cid) not in pending_contents
+                        and not content_is_due(item, state, args, now=now)):
                     scan_totals["skipped_not_due"] += 1
                     continue
                 try:
@@ -800,11 +816,13 @@ def check_comments(client, contents, args, *, state=None, timeline=None,
                             timeline and timeline_store.event_key(
                                 platform, str(root["comment_id"]))
                             in timeline.get("events", {}))
+                        pending_reply = (account_key, platform, cid, str(root['comment_id'])) in pending_threads
+                        replies_changed = current_replies > 0 and (
+                            previous_replies is None or current_replies > int(previous_replies)
+                            or root.get("reply_count_is_lower_bound", False))
                         should_fetch_replies = (
-                            not args.no_replies and root_tracked and current_replies > 0
-                            and (previous_replies is None
-                                 or current_replies > int(previous_replies)
-                                 or root.get("reply_count_is_lower_bound", False)))
+                            not args.no_replies and root_tracked
+                            and (pending_reply or replies_changed))
                         if not should_fetch_replies:
                             if previous_replies is None:
                                 reply_counts[reply_key] = current_replies

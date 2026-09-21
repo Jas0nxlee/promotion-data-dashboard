@@ -29,6 +29,7 @@
   </header>
 
   <section class="timeline-status" id="timelineStatus"></section>
+  <p id="refreshStatus" class="filter-summary" role="status" aria-live="polite"></p>
 
   <section class="control-bar" aria-label="时间线筛选">
     <div class="control-title"><i class="dot dot-cyan"></i>时间线筛选<span>指标、时间线与导出同步</span></div>
@@ -37,7 +38,7 @@
       <select id="fAccount" aria-label="账号"><option value="all">全部账号</option></select>
       <select id="fStatus" aria-label="回复状态">
         <option value="all">全部状态</option>
-        <option value="pending">待官方回复</option>
+        <option value="pending">尚未检测到官方回复</option>
         <option value="replied">已官方回复</option>
       </select>
       <select id="fPeriod" aria-label="时间范围">
@@ -79,6 +80,6 @@
   </footer>
 </div>
 <script src="../lib/echarts.min.js"></script>
-<script src="js/app.js?v=20260915-2"></script>
+<script src="js/app.js?v=20260921-replies"></script>
 </body>
 </html>
