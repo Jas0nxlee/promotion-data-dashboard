@@ -102,6 +102,14 @@ def run_comment_cycle() -> dict:
     return {"monitor": monitor, "mail": mail}
 
 
+def session_alerts_enabled() -> bool:
+    return os.environ.get('SESSION_ALERT_RECIPIENT', '').strip().lower() not in {'', 'disabled'}
+
+
+def run_session_alert_cycle() -> dict:
+    return {"alerts": run("登录失效提醒", [sys.executable, str(ROOT / "pipeline" / "session_alerts.py")])}
+
+
 def mark(state: dict, key: str, slot: str, results: dict) -> None:
     state[key] = slot
     state[f"{key}_finished_at"] = now_cn().isoformat()
@@ -128,7 +136,7 @@ def run_due(current: datetime | None = None) -> None:
 def scheduler_loop() -> None:
     daily_hour = int(os.environ.get("DATA_COLLECTION_HOUR", "8"))
     poll_seconds = max(10, int(os.environ.get("SCHEDULER_POLL_SECONDS", "20")))
-    log(f"调度器启动：数据采集每天 {daily_hour:02d}:00，评论检查每小时整点")
+    log(f"调度器启动：数据采集每天 {daily_hour:02d}:00，评论检查每小时整点，登录提醒每5分钟")
     engine = DispatchScheduler()
     try:
         while True:
@@ -139,9 +147,9 @@ def scheduler_loop() -> None:
 
 
 class DispatchScheduler:
-    """Separate data/comment lanes; catch up missed daily slots and retry failures."""
+    """Independent collection and alert lanes; catch up missed slots and retry failures."""
     def __init__(self, executor=None):
-        self.executor = executor or ThreadPoolExecutor(max_workers=2)
+        self.executor = executor or ThreadPoolExecutor(max_workers=3)
         self.running = {}
 
     def tick(self, current=None):
@@ -160,7 +168,7 @@ class DispatchScheduler:
             if success:
                 state[f"last_{kind}_slot"] = slot
             else:
-                state[f"{kind}_retry_after"] = (current + timedelta(minutes=15)).isoformat()
+                state[f"{kind}_retry_after"] = (current + timedelta(minutes=5 if kind == 'session' else 15)).isoformat()
             save_state(state)
             DATA.mkdir(parents=True, exist_ok=True)
             with (DATA / "run_history.jsonl").open("a", encoding="utf-8") as stream:
@@ -169,7 +177,11 @@ class DispatchScheduler:
                                          "results": results, "test_mode": is_test()}) + "\n")
             del self.running[kind]
         slots = {"data": current.strftime("%Y-%m-%d"), "comment": current.strftime("%Y-%m-%dT%H")}
-        for kind, function in (("comment", run_comment_cycle), ("data", run_data_collection)):
+        jobs = [("comment", run_comment_cycle), ("data", run_data_collection)]
+        if session_alerts_enabled():
+            slots['session'] = current.replace(minute=current.minute // 5 * 5).strftime('%Y-%m-%dT%H:%M')
+            jobs.append(('session', run_session_alert_cycle))
+        for kind, function in jobs:
             if kind in self.running or state.get(f"last_{kind}_slot") == slots[kind]:
                 continue
             if kind == "data" and current.hour < int(os.environ.get("DATA_COLLECTION_HOUR", "8")):
@@ -186,7 +198,7 @@ class DispatchScheduler:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="采集任务容器调度器")
-    parser.add_argument("--run", choices=("data", "comments", "all"), help="立即执行一次后退出")
+    parser.add_argument("--run", choices=("data", "comments", "sessions", "all"), help="立即执行一次后退出")
     args = parser.parse_args()
     with scheduler_guard():
         if args.run in {"data", "all"}:
@@ -196,6 +208,9 @@ def main() -> None:
         if args.run in {"comments", "all"}:
             results = run_comment_cycle()
             if any(results.values()):
+                raise SystemExit(1)
+        if args.run in {"sessions", "all"}:
+            if any(run_session_alert_cycle().values()):
                 raise SystemExit(1)
         if not args.run:
             scheduler_loop()

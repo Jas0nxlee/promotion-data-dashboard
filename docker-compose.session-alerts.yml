@@ -1,0 +1,34 @@
+# Standalone additive deployment using the existing collector image.
+# Run alone with -f; it does not rebuild or restart the main scheduler.
+name: promotion-login-alerts
+services:
+  session-alerts:
+    image: ${SESSION_ALERT_IMAGE:-promotion-dashboard-scheduler:latest}
+    command: [python, pipeline/session_alerts.py, --loop]
+    env_file: [.env]
+    environment:
+      TZ: Asia/Shanghai
+      SESSION_ALERT_RECIPIENT: ${SESSION_ALERT_RECIPIENT:?Set SESSION_ALERT_RECIPIENT}
+      PROMOTION_PROVIDER_CONFIG: /run/promotion/providers/providers.json
+      PROMOTION_SESSION_DIR: /app/data/sessions
+    volumes:
+      - ./pipeline/session_alerts.py:/app/pipeline/session_alerts.py:ro
+      - ./data:/app/data
+      - ./config:/app/config:ro
+      - ${PROMOTION_SESSIONS_DIR:-./.runtime/sessions}:/app/data/sessions
+      - type: bind
+        source: ${PROMOTION_PROVIDER_DIR:-./.runtime/provider-config}
+        target: /run/promotion/providers
+        read_only: true
+        bind:
+          create_host_path: false
+    init: true
+    read_only: true
+    tmpfs: [/tmp]
+    security_opt: [no-new-privileges:true]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: 5m
+        max-file: '3'

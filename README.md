@@ -20,6 +20,7 @@
 - 四平台评论及二级回复分页框架；B站和抖音各2个账号、视频号2个账号、小红书1个账号已验证；无回复的样本单独标明，其余账号仍待接入。
 - 其他平台评论数量增长提醒。
 - SMTP 邮件队列、失败重试和按平台配置收件人。
+- 登录失效邮件提醒：独立收件人、同次失效去重、发送失败重试、重新授权后解除告警。
 - Docker 部署及北京时间定时调度。
 
 ## 运行架构
@@ -169,6 +170,29 @@ DASHBOARD_PORT=8080
 - 每小时：检查新内容发现是否到期 → 按内容年龄分层监测评论 → 发送待发邮件。新内容发现默认每2小时执行一次。
 
 调度状态保存在 `data/scheduler_state.json`。同一小时内重启容器不会重复执行整轮任务。
+
+### 登录失效提醒
+
+在 `.env` 中设置独立收件人：
+
+```env
+SESSION_ALERT_RECIPIENT=receiver@example.com
+```
+
+调度器每5分钟检查已记录的授权状态，仅对 `session_expired`（会话失效／需要人工验证）和 `identity_mismatch`（登录身份不匹配）发邮件，不受评论通知开关影响。它不主动访问平台探测；首次发现仍取决于实际采集或会话检查的执行时间，不能提前预测平台何时使登录失效。网络错误、限流、初次授权取消或超时不触发登录失效邮件。
+
+同一次失效仅发一封；SMTP失败保留待发状态，5分钟后重试。成功重新授权会解除告警并取消未发送的旧提醒；再次失效可以再次提醒。去重及待发状态保存在 `data/session_alert_state.json`，请保留该文件。SMTP已接收但成功状态尚未落盘时中断，仍可能重复投递。空值或 `disabled` 关闭提醒。
+
+可单独运行 `python pipeline/session_alerts.py`，无需启动采集任务；测试模式仅保存待发状态，禁止真实发信。重新授权步骤见 [Docker授权说明](docs/DOCKER_AUTHORIZATION.md)。修改环境变量后需重新创建调度器容器才能生效。
+
+现有服务器可使用辅助提醒容器，复用当前采集镜像及共享状态，无需重建主服务：
+
+```bash
+docker compose -f docker-compose.session-alerts.yml up -d --no-build
+docker compose -f docker-compose.session-alerts.yml logs --tail 20 session-alerts
+```
+
+首次启动立即检查，之后每5分钟检查。关闭时运行 `docker compose -f docker-compose.session-alerts.yml down`，保留提醒状态文件即可继续去重。若新版主调度器同时启用提醒，两者通过同一个文件锁及去重状态串行处理。
 
 ## 评论监测语义
 
