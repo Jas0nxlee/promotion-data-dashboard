@@ -99,7 +99,17 @@ def normalize_catalog(pages, profile):
             sent_info, sent_result = group.get('sent_info') or {}, group.get('sent_result') or {}
             published_info = group.get('publish_info') or {}
             standalone = group_type == 10002
-            if standalone and (published_info.get('publish_status') != 200
+            # A previously successful standalone publication can later be deleted.
+            # Require agreement between status history, UI label and every item;
+            # the normal item loop retains explicit deletion exclusions below.
+            deleted_standalone = (standalone and published_info.get('publish_status') == 300
+                and isinstance(published_info.get('pre_publish_status'), list)
+                and 200 in published_info['pre_publish_status']
+                and isinstance(group.get('view'), dict) and group['view'].get('status') == '已删除'
+                and isinstance(group.get('appmsg_info'), list) and bool(group['appmsg_info'])
+                and all(isinstance(raw, dict) and raw.get('is_deleted') is True
+                        for raw in group['appmsg_info']))
+            if standalone and ((published_info.get('publish_status') != 200 and not deleted_standalone)
                                or identifier(published_info.get('msgid')) != gid
                                or not timestamp(published_info.get('create_time'))):
                 raise ProviderError('schema_changed', f'独立发表消息组 {gid} 的身份、成功状态或发表时间尚未核验')

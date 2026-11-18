@@ -52,7 +52,8 @@ def _head_signature(head):
             'sent_info': {k: sent.get(k) for k in ('time', 'is_published')},
             'sent_result': {k: result.get(k) for k in ('msg_status', 'msg_fail_reason', 'refuse_reason', 'update_time')},
             'status_label': _object(group.get('view')).get('status'),
-            'publish_info': {k: published.get(k) for k in ('publish_status', 'create_time', 'msgid', 'unparsed')},
+            'publish_info': {k: published.get(k) for k in
+                             ('publish_status', 'pre_publish_status', 'create_time', 'msgid', 'unparsed')},
             'appmsg_info': _children(group.get('appmsg_info')),
             'appmsgex': _children(group.get('appmsgex')),
             'published_appmsg_info': _children(published.get('appmsg_info')),

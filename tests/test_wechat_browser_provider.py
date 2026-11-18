@@ -129,6 +129,33 @@ class WeChatBrowserTests(unittest.TestCase):
             bad=copy.deepcopy(pending);bad['sent_info']['is_published']=published;bad['view']['status']=label
             with self.assertRaises(ProviderError):normalize_catalog([page([bad])],PROFILE)
 
+    def test_deleted_standalone_publication_is_audited_without_becoming_an_article(self):
+        deleted=group(2247484191,items=[item(2247484191,deleted=True)])
+        deleted.update(type=10002,sent_info=None,sent_result={'reject_index_list':[]},
+                       publish_info={'msgid':2247484191,'publish_status':300,
+                                     'create_time':1789723397,'pre_publish_status':[200]},
+                       view={'status':'已删除'})
+        profile,rows,complete=normalize_catalog([page([deleted])],PROFILE)
+        self.assertTrue(complete)
+        self.assertEqual([],rows)
+        self.assertEqual(1,profile['publication_groups_covered'])
+        self.assertEqual([{'article_id':'2247484191-1','official_message_id':'2247484191',
+                          'item_show_type':0,'reason':'deleted'}],profile['excluded_contents'])
+        for case in ('wrong-id','no-time','not-deleted','missing-flag','mixed-items',
+                     'empty-items','unknown-status','unknown-label','no-prior-success'):
+            bad=copy.deepcopy(deleted)
+            if case=='wrong-id':bad['publish_info']['msgid']=999
+            elif case=='no-time':bad['publish_info']['create_time']=0
+            elif case=='not-deleted':bad['appmsg_info'][0]['is_deleted']=False
+            elif case=='missing-flag':bad['appmsg_info'][0].pop('is_deleted')
+            elif case=='mixed-items':bad['appmsg_info'].append(item(2247484191,idx=2))
+            elif case=='empty-items':bad['appmsg_info']=[]
+            elif case=='unknown-status':bad['publish_info']['publish_status']=301
+            elif case=='unknown-label':bad['view']['status']='未知'
+            elif case=='no-prior-success':bad['publish_info']['pre_publish_status']=[]
+            with self.subTest(case=case),self.assertRaises(ProviderError):
+                normalize_catalog([page([bad])],PROFILE)
+
     def test_unavailable_group_requires_every_article_explicitly_deleted(self):
         unavailable=group(items=[item(deleted=True),item(idx=2,deleted=True)])
         unavailable.update(sent_result={'msg_status':8},view={'status':'无法查看'})

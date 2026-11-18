@@ -36,6 +36,9 @@ class BoundedPage:
     def expect_response(self,predicate,**kwargs):
         kwargs['timeout']=min(kwargs.get('timeout',800),800)
         return self.page.expect_response(predicate,**kwargs)
+    def wait_for_function(self,expression,**kwargs):
+        kwargs['timeout']=min(kwargs.get('timeout',800),800)
+        return self.page.wait_for_function(expression,**kwargs)
     def __getattr__(self,name):return getattr(self.page,name)
 
 
@@ -60,13 +63,14 @@ class ChannelsCatalogNavigationTests(unittest.TestCase):
         self.source=SimpleNamespace(budget=Mock())
         self.provider=WeChatChannelsProvider(ACCOUNT,SETTINGS,self.source)
 
-    def setup_route(self,*,total=23,rendered=23,emit_response=True,userpage_type=11,label='视频',error_code=0,render_delay=250):
+    def setup_route(self,*,total=23,rendered=23,emit_response=True,userpage_type=11,label='视频',error_code=0,render_delay=250,manage_tag='a',video_tag='a',collapsed=False,hidden_count_duplicate=False,keep_home_url=False):
         config=json.dumps({'postPath':POST_PATH,'posts':POSTS,'total':total,'rendered':rendered,
                            'emitResponse':emit_response,'userpageType':userpage_type,
-                           'label':label,'delay':render_delay},ensure_ascii=False)
+                           'label':label,'delay':render_delay,'hiddenDuplicate':hidden_count_duplicate,
+                           'keepHomeUrl':keep_home_url},ensure_ascii=False)
         html='''<!doctype html><html><meta charset="utf-8"><body>
-<a id="manage" href="javascript:;">内容管理</a><div>内容管理</div>
-<a id="videos" href="javascript:;" hidden>视频</a>
+MANAGE_MARKUP<div>内容管理</div>
+<VIDEO_TAG id="videos" class="finder-ui-desktop-menu__link" href="javascript:;" hidden>视频</VIDEO_TAG>
 <wujie-app id="content"></wujie-app>
 <script>
 const fixture=CONFIG;
@@ -75,19 +79,24 @@ window.headerHistory=[];
 function renderCount(value) {
  const label=fixture.label+'('+value+')';
  // Match the actual Wujie label text, including its surrounding whitespace.
- shadow.innerHTML='<div role="tab" style="white-space: pre">\\n    '+fixture.label+' ('+value+')\\n  </div>';
+ shadow.innerHTML=(fixture.hiddenDuplicate?'<div role="tab" style="display:none">视频 (999)</div>':'')+
+   '<div role="tab" style="white-space: pre">\\n    '+fixture.label+' ('+value+')\\n  </div>';
  window.headerHistory.push(label);
 }
 document.getElementById('manage').onclick=()=>{document.getElementById('videos').hidden=false;};
 document.getElementById('videos').onclick=()=>{
- history.pushState({},'',fixture.posts);
+ if(!fixture.keepHomeUrl) history.pushState({},'',fixture.posts);
  renderCount(0);
  if(!fixture.emitResponse) {renderCount(fixture.rendered);return;}
  fetch(fixture.postPath,{method:'POST',headers:{'Content-Type':'application/json'},
   body:JSON.stringify({userpageType:fixture.userpageType,pageSize:20,currentPage:1,stickyOrder:true})})
  .then(r=>r.json()).then(()=>setTimeout(()=>renderCount(fixture.rendered),fixture.delay));
 };
-</script></body></html>'''.replace('CONFIG',config)
+</script></body></html>'''
+        manage_markup = ('<a id="manage" href="javascript:;" class="finder-ui-desktop-menu__link">'
+                         '<svg aria-hidden="true"></svg><span style="display:none">内容管理</span></a>' if collapsed else
+                         f'<{manage_tag} id="manage" href="javascript:;">内容管理</{manage_tag}>')
+        html=html.replace('CONFIG',config).replace('MANAGE_MARKUP',manage_markup).replace('VIDEO_TAG',video_tag)
         def route(request):
             parsed=urlsplit(request.request.url)
             if request.request.is_navigation_request():
@@ -117,6 +126,27 @@ document.getElementById('videos').onclick=()=>{
         self.assertEqual([HOME],self.documents)
         self.assertEqual([{'userpageType':11,'pageSize':20,'currentPage':1,'stickyOrder':True}],self.requests)
         self.assertEqual([],self.unexpected)
+
+    def test_non_link_navigation_still_requires_video_response_and_matching_count(self):
+        self.setup_route(manage_tag='div',video_tag='button')
+        self.assertEqual(23,self.read_total())
+        self.assertEqual(11,self.requests[0]['userpageType'])
+        self.assertEqual([],self.unexpected)
+
+    def test_collapsed_icon_menu_uses_visible_anchor_around_hidden_label(self):
+        self.setup_route(collapsed=True)
+        self.assertEqual(23,self.read_total())
+        self.assertEqual([{'userpageType':11,'pageSize':20,'currentPage':1,'stickyOrder':True}],self.requests)
+
+    def test_hidden_duplicate_does_not_mask_visible_video_count(self):
+        self.setup_route(collapsed=True,hidden_count_duplicate=True)
+        self.assertEqual(23,self.read_total())
+        self.assertEqual(1,len(self.requests))
+
+    def test_wujie_internal_video_route_can_leave_top_level_url_at_home(self):
+        self.setup_route(collapsed=True,keep_home_url=True)
+        self.assertEqual(23,self.read_total())
+        self.assertEqual(HOME,self.page.url)
 
     def test_header_alone_without_normal_list_response_is_not_coverage_evidence(self):
         self.setup_route(emit_response=False)

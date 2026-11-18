@@ -83,7 +83,8 @@ class PublicationPageCacheTests(unittest.TestCase):
         head=page();head['publish_list'][0]={'type':10002,'publish_info':{
             'publish_status':200,'create_time':1700000000,'msgid':'legacy-1',
             'appmsgex':[{'appmsgid':'123','itemidx':1,'is_deleted':False,'read_num':3}]}}
-        for field,value in [('publish_status',201),('create_time',1700000001),('msgid','legacy-2')]:
+        for field,value in [('publish_status',201),('pre_publish_status',[200]),
+                            ('create_time',1700000001),('msgid','legacy-2')]:
             cache=self.cache(head);cache.put(page(2))
             changed=copy.deepcopy(head);changed['publish_list'][0]['publish_info'][field]=value
             self.assertIsNone(self.cache(changed).get(2))

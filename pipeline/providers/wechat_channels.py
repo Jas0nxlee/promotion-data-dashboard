@@ -8,6 +8,7 @@ from .browser import BrowserSource
 import copy
 import re
 import time
+from time import monotonic as navigation_monotonic
 from urllib.parse import urlparse
 
 HOME = "https://channels.weixin.qq.com/platform"
@@ -16,6 +17,14 @@ POST_PATH = "/micro/content/cgi-bin/mmfinderassistant-bin/post/post_list"
 INTERACTION = HOME + "/interaction/comment"
 INTERACTION_POSTS = "/micro/interaction/cgi-bin/mmfinderassistant-bin/post/post_list"
 COMMENTS = "/micro/interaction/cgi-bin/mmfinderassistant-bin/comment/comment_list"
+VISIBLE_VIDEO_LABELS = r"""() => [...document.querySelectorAll('wujie-app')]
+    .flatMap(host => [...(host.shadowRoot?.querySelectorAll('a,[role="tab"]') || [])])
+    .filter(el => {
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 &&
+            getComputedStyle(el).visibility === 'visible';
+    }).map(el => el.textContent.trim())
+    .filter(text => /^\s*视频\s*[（(]\s*[0-9,]+\s*[)）]\s*$/.test(text))"""
 
 
 def comment_record(raw, parent=""):
@@ -157,26 +166,40 @@ class WeChatChannelsProvider:
         try:
             # Wujie can redirect a freshly loaded deep link back to Home; use
             # the site's visible navigation after the authorized Home bootstrap.
-            page.get_by_role("link", name="内容管理", exact=True).click(timeout=20000)
+            self._click_navigation_label(page, "内容管理")
+            menu = page.locator("a.finder-ui-desktop-menu__link").filter(
+                has_text=re.compile(r"^\s*内容管理\s*$"))
+            video_menu = page.locator("a.finder-ui-desktop-menu__link:visible").filter(
+                has_text=re.compile(r"^\s*视频\s*$"))
+            if menu.count():
+                menu.first.hover(timeout=10000)
+                video_menu.first.wait_for(state="visible", timeout=10000)
             stage = "进入视频管理并等待列表"
-            with page.expect_response(lambda response: urlparse(response.url).path == POST_PATH
-                                      and response.request.method == "POST", timeout=20000) as pending:
-                page.get_by_role("link", name="视频", exact=True).click(timeout=20000)
+            def video_list_response(response):
+                if urlparse(response.url).path != POST_PATH or response.request.method != "POST":
+                    return False
+                body = response.request.post_data_json
+                return (isinstance(body, dict) and body.get("userpageType") == 11
+                        and body.get("pageSize") == 20 and body.get("currentPage") == 1)
+            with page.expect_response(video_list_response, timeout=20000) as pending:
+                self._click_navigation_label(page, "视频")
             response = pending.value
             stage = "核验视频列表响应"
             request = response.request.post_data_json
             payload = response.json()
             scope_total = number((payload.get("data") or {}).get("totalCount"))
             if (not isinstance(request, dict) or request.get("userpageType") != 11
+                    or request.get("pageSize") != 20 or request.get("currentPage") != 1
                     or payload.get("errCode") != 0 or scope_total is None):
                 raise ProviderError("schema_changed", "视频管理页读取范围或总数发生变化")
-            tab = page.get_by_text(pattern).first
             stage = "读取视频管理页计数"
-            tab.wait_for(state="visible", timeout=20000)
+            page.wait_for_function(f"() => ({VISIBLE_VIDEO_LABELS})().length > 0", timeout=20000)
             deadline = time.monotonic() + 20
             while time.monotonic() < deadline:
-                match = pattern.fullmatch(tab.inner_text().strip())
-                if match and int(match[1].replace(",", "")) == scope_total:
+                labels = page.evaluate(VISIBLE_VIDEO_LABELS)
+                matches = [pattern.fullmatch(label) for label in labels]
+                totals = [int(match[1].replace(",", "")) for match in matches if match]
+                if len(totals) == 1 and totals[0] == scope_total:
                     return scope_total
                 page.wait_for_timeout(100)
             raise ProviderError("incomplete_pagination", "视频管理页标签与正常列表响应的总数不一致")
@@ -186,6 +209,31 @@ class WeChatChannelsProvider:
             if "login" in page.url:
                 raise ProviderError("session_expired", "视频管理页需要重新登录") from None
             raise ProviderError("schema_changed", f"无法核验视频管理页总数（{stage}），未使用首页合计替代") from None
+
+    @staticmethod
+    def _click_navigation_label(page, label):
+        # In the collapsed menu the label is inside a display:none span, while
+        # its anchor remains visible. Accessible-name and text locators target
+        # the hidden span, so locate the clickable ancestor by its text content.
+        deadline = navigation_monotonic() + 20
+        while navigation_monotonic() < deadline:
+            candidates = (page.locator("a.finder-ui-desktop-menu__link").filter(
+                              has_text=re.compile(rf"^\s*{re.escape(label)}\s*$")),
+                          page.get_by_role("link", name=label, exact=True),
+                          page.get_by_role("button", name=label, exact=True),
+                          page.get_by_role("menuitem", name=label, exact=True),
+                          page.get_by_text(label, exact=True))
+            for locator in candidates:
+                for index in range(min(locator.count(), 20)):
+                    item = locator.nth(index)
+                    if item.is_visible():
+                        try:
+                            item.click(timeout=3000)
+                            return
+                        except Exception:
+                            continue
+            page.wait_for_timeout(100)
+        raise TimeoutError(f"navigation label unavailable: {label}")
 
     def _request_template(self, bind=False):
         page = self.browser.context.new_page()
