@@ -20,11 +20,13 @@ from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urljoin, urlparse, urlunparse
 
 from snapshot_utils import (
+    SnapshotReadError,
     atomic_write_json,
     atomic_write_text,
     finalize_snapshot,
     is_suspicious_drop,
     merge_records,
+    read_previous_snapshot,
 )
 
 try:
@@ -1360,13 +1362,7 @@ class ManualCollector:
 
 
 def load_previous(path):
-    if not path.exists():
-        return {"accounts": [], "articles": []}
-    try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return data if isinstance(data, dict) else {"accounts": [], "articles": []}
-    except (OSError, json.JSONDecodeError):
-        return {"accounts": [], "articles": []}
+    return read_previous_snapshot(path, "articles")
 
 
 class ProviderArticleCollector:
@@ -1674,7 +1670,10 @@ def main():
         help="仅刷新指定平台、账号名或 account_key；可重复使用，其他账号保留现有快照")
     args = parser.parse_args()
     load_dotenv()
-    data = finalize_snapshot(make_mock(), "article") if args.mock else collect(args)
+    try:
+        data = finalize_snapshot(make_mock(), "article") if args.mock else collect(args)
+    except SnapshotReadError as exc:
+        sys.exit(str(exc))
     write_outputs(data, Path(args.out), not args.no_publish_web)
     if not args.mock and any(a.get("refreshed_in_run") is not False and a.get("status") != "ok"
                              or a.get("last_attempt_at") == data.get("updated_at") and a.get("status") != "ok"

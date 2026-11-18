@@ -16,6 +16,27 @@ VIDEO_METRICS = ("play", "like", "comment", "share", "collect", "download")
 ARTICLE_METRICS = ("read", "like", "comment", "share", "collect")
 
 
+class SnapshotReadError(RuntimeError):
+    """An existing collection baseline cannot safely be used for a refresh."""
+
+
+def read_previous_snapshot(path: Path, records_key: str) -> dict:
+    try:
+        with path.open(encoding="utf-8") as handle:
+            data = json.load(handle)
+        for key in ("accounts", records_key):
+            rows = data.get(key) if isinstance(data, dict) else None
+            if not isinstance(rows, list) or not all(isinstance(row, dict) for row in rows):
+                raise ValueError(f"{key} 应为对象数组")
+    except FileNotFoundError as exc:
+        if not path.is_symlink():
+            return {"accounts": [], records_key: []}
+        raise SnapshotReadError(f"无法读取历史快照 {path}：链接目标不存在") from exc
+    except (OSError, ValueError) as exc:
+        raise SnapshotReadError(f"无法读取历史快照 {path}：{exc}") from exc
+    return data
+
+
 def atomic_write_text(path: Path, text: str) -> None:
     """同目录临时文件写完并 fsync 后再替换，避免页面读到半截 JSON。"""
     path = Path(path)

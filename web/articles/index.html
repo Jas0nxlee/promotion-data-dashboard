@@ -5,117 +5,150 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>图文推广数据大屏</title>
 <link rel="icon" href="data:,">
-  <link rel="stylesheet" href="css/style.css?v=20260916-1">
-
+<link rel="stylesheet" href="../css/maitian.css?v=20261118">
+<link rel="stylesheet" href="../css/style.css?v=20261118">
+<link rel="stylesheet" href="css/style.css?v=20261118">
+<link rel="stylesheet" href="../css/workspace.css?v=20261118">
+<link rel="stylesheet" href="../css/content-spotlight.css?v=20261118">
+<link rel="stylesheet" href="../css/publication-calendar.css?v=20261118">
 </head>
 <body>
-<div id="app">
-
-  <header class="topbar">
-    <div class="topbar-left">
-      <div class="logo-mark article-logo"></div>
-      <h1>图文推广数据大屏</h1>
-      <span class="subtitle" id="subtitle">账号与平台加载中</span>
-    </div>
-    <nav class="dashboard-switch" aria-label="推广数据大屏切换">
-      <a href="../index.html">视频推广数据大屏</a>
-      <a class="active" href="index.html">图文推广数据大屏</a>
-      <a href="../comments/index.html">评论互动时间线</a>
+<a class="skip-link" href="#main-content">跳至主要内容</a>
+<div class="workspace">
+  <header class="workspace-toolbar">
+    <a class="workspace-brand" href="../index.html" aria-label="推广数据中心首页">
+      <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>
+      推广数据中心
+    </a>
+    <nav class="workspace-nav" aria-label="数据看板">
+        <a href="../index.html"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3z"/></svg><span>视频概览</span></a>
+        <a href="../articles/index.html" aria-current="page"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg><span>图文概览</span></a>
+        <a href="../comments/index.html"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a8 8 0 0 1-8 8H6l-4 2 1.6-5.1A8 8 0 0 1 3 12a9 9 0 0 1 18 0Z"/><path d="M7.5 11h9M7.5 14.5h6"/></svg><span>评论互动</span></a>
     </nav>
-    <div class="topbar-right">
-      <span id="sourceBadge" class="badge">数据加载中</span>
-      <span class="update-time">更新于 <b id="updatedAt">--</b></span>
-      <span class="clock" id="clock">--:--:--</span>
-    </div>
+
+    <div class="workspace-time"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 7v5l3 2"/></svg><span>本地时间</span><time id="clock">--:--:--</time></div>
   </header>
-
-  <details class="quality-collapse" id="qualityCollapse">
-    <summary id="healthSummary"><i class="quality-dot"></i><span class="quality-summary-text">数据质量概览</span></summary>
-    <section class="notice" id="dataNotice" hidden></section>
-    <section class="health-strip" id="dataHealth" aria-label="数据质量概览"></section>
-  </details>
-
-  <section class="control-bar" aria-label="全局筛选">
-    <div class="control-title"><i class="dot dot-cyan"></i>全局筛选<span>作用于全部指标与图表</span></div>
-    <div class="filters">
-      <select id="fPlatform"><option value="all">全部平台</option></select>
-      <select id="fLine"><option value="all">全部业务线</option></select>
-      <select id="fAccount"><option value="all">全部账号</option></select>
-      <select id="fPeriod">
-        <option value="all">全部时间</option>
-        <option value="30">近 30 天</option>
-        <option value="90">近 90 天</option>
-        <option value="365">近 1 年</option>
-      </select>
-      <button class="reset-filters" id="resetFilters" type="button">重置</button>
-      <button class="export-data" id="exportData" type="button" title="导出当前筛选和搜索结果">导出数据</button>
-    </div>
-    <div class="filter-summary" id="filterSummary"></div>
-  </section>
-
-  <section class="kpi-strip" id="kpiStrip"></section>
-  <p class="metric-scope-note" id="peopleMetricNote" hidden>
-    <strong>公众号指标口径</strong> 后台提供的阅读、点赞、分享和推荐人数在文章明细中单列，不并入原有次数汇总与排行；不同文章的人数不能相加视为去重人数。一级评论按条计，评论列包含回复；未提供值显示 -。
-  </p>
-
-  <section class="grid-row">
-    <div class="card span-3">
-      <div class="card-title"><i class="dot dot-cyan"></i>平台文章分布<span class="card-note">按当前筛选的发布记录</span></div>
-      <div class="chart" id="chartDist"></div>
-    </div>
-    <div class="card span-6">
-      <div class="card-title"><i class="dot dot-gold"></i>发布与阅读趋势
-        <span class="card-note">最近 24 个月 · 公开阅读值（面积）/ 发布数（虚线）</span>
+  <main id="main-content" class="workspace-main">
+    <header class="workspace-heading">
+      <div>
+        <h1>图文推广</h1>
+        <p class="page-context"><span id="subtitle">账号与平台加载中</span><span id="sourceBadge" class="badge">数据加载中</span></p>
       </div>
-      <div class="chart" id="chartTrend"></div>
-    </div>
-    <div class="card span-3">
-      <div class="card-title"><i class="dot dot-pink"></i>文章热榜
-        <span class="tabs" id="topTabs"></span>
+      <div class="heading-actions">
+        <span class="snapshot-time">快照更新于 <b id="updatedAt">--</b></span>
+        <details class="jump-menu">
+          <summary>本页目录</summary>
+          <nav class="workspace-anchors" aria-label="本页目录">
+              <a href="#releaseSection">内容动态</a>
+              <a href="#kpiStrip">核心指标</a>
+              <a href="#trendSection">趋势与分布</a>
+              <a href="#accountsSection">账号对比</a>
+              <a href="#detailSection">内容明细</a>
+          </nav>
+        </details>
+        <button id="exportData" class="export-data" type="button" title="导出当前筛选结果为 CSV"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m-5-5 5 5 5-5M4 16v4h16v-4"/></svg>导出 CSV</button>
       </div>
-      <div class="rank-list" id="topList"></div>
-    </div>
-  </section>
-
-  <section class="grid-row compare-row">
-    <div class="card span-3">
-      <div class="card-title"><i class="dot dot-violet"></i>业务线对比
-        <span class="card-note">各指标按有值文章均值，最高业务线=100</span>
+    </header>
+    <section class="control-bar" aria-label="全局筛选">
+      <div class="control-title">全局筛选</div>
+      <div class="filters">
+        <select id="fPlatform" aria-label="平台"><option value="all">全部平台</option></select>
+        <select id="fLine" aria-label="业务线"><option value="all">全部业务线</option></select>
+        <select id="fAccount" aria-label="账号"><option value="all">全部账号</option></select>
+        <select id="fPeriod" aria-label="时间范围">
+          <option value="all">全部时间</option>
+          <option value="30">近 30 天</option>
+          <option value="90">近 90 天</option>
+          <option value="365">近 1 年</option>
+        </select>
+        <button class="reset-filters" id="resetFilters" type="button">重置</button>
       </div>
-      <div class="chart" id="chartRadar"></div>
-    </div>
-    <div class="card span-6">
-      <div class="card-title"><i class="dot dot-green"></i>账号指标对比
-        <span class="tabs" id="acctTabs"></span>
+      <div class="filter-summary" id="filterSummary"></div>
+    </section>
+
+    <section id="releaseSection" class="release-grid" aria-label="内容动态">
+      <fieldset class="release-views">
+        <legend>内容动态视图</legend>
+        <label><input type="radio" name="releaseView" id="showLatest" checked>最新发布</label>
+        <label><input type="radio" name="releaseView" id="showMonth">发布日历</label>
+      </fieldset>
+      <section id="contentSpotlight" aria-label="最新发布"></section>
+      <section id="publicationCalendar" class="card" aria-label="发布日历"></section>
+    </section>
+    <section class="kpi-strip" id="kpiStrip" aria-label="核心指标"></section>
+    <p class="metric-scope-note" id="peopleMetricNote" hidden>
+      <strong>公众号指标口径</strong> 后台提供的阅读、点赞、分享和推荐人数在文章明细中单列，不并入原有次数汇总与排行；不同文章的人数不能相加视为去重人数。一级评论按条计，评论列包含回复；未提供值显示 -。
+    </p>
+
+    <section class="grid-row" id="trendSection">
+      <div class="card chart-trend span-6">
+        <h2 class="card-title"><i class="dot dot-gold"></i>发布与阅读趋势
+          <span class="card-note">最近 24 个月 · 公开阅读值（面积）/ 发布数（虚线）</span>
+        </h2>
+        <div class="chart" id="chartTrend"></div>
       </div>
-      <div class="chart" id="chartAcct"></div>
-    </div>
-    <div class="card span-3 account-card">
-      <div class="card-title"><i class="dot dot-cyan"></i>账号覆盖概览</div>
-      <div class="acct-table-wrap">
-        <table class="acct-table" id="acctTable"></table>
+      <div class="card chart-dist span-3">
+        <h2 class="card-title"><i class="dot dot-cyan"></i>平台文章分布<span class="card-note">按当前筛选的发布记录</span></h2>
+        <div class="chart" id="chartDist"></div>
       </div>
-    </div>
-  </section>
+    </section>
 
-  <section class="card detail-card">
-    <div class="card-title"><i class="dot dot-gold"></i>文章明细
-      <span class="detail-search">
-        <input type="search" id="fSearch" placeholder="搜索标题或摘要…">
-      </span>
-    </div>
-    <div class="table-wrap">
-      <table class="detail-table" id="detailTable"></table>
-    </div>
-    <div class="pager" id="pager"></div>
-  </section>
+    <section class="grid-row">
+      <div class="card chart-rank span-3">
+        <h2 class="card-title"><i class="dot dot-pink"></i>文章热榜
+          <span class="tabs" id="topTabs"></span>
+        </h2>
+        <div class="rank-list" id="topList"></div>
+      </div>
+      <div class="card chart-radar span-3">
+        <h2 class="card-title"><i class="dot dot-violet"></i>业务线对比
+          <span class="card-note">各指标按有值文章均值，最高业务线=100</span>
+        </h2>
+        <div class="chart" id="chartRadar"></div>
+      </div>
+    </section>
 
-  <footer class="foot">
-    数据说明：总量仅汇总有公开值的文章，并在指标卡标明覆盖范围；未公开项显示 -；账号“当前 / 累计”用于区分筛选结果与账号历史覆盖。
-  </footer>
+    <section class="grid-row" id="accountsSection">
+      <div class="card chart-accounts span-6">
+        <h2 class="card-title"><i class="dot dot-green"></i>账号指标对比
+          <span class="tabs" id="acctTabs"></span>
+        </h2>
+        <div class="chart" id="chartAcct"></div>
+      </div>
+      <div class="card chart-coverage span-3 account-card">
+        <h2 class="card-title"><i class="dot dot-cyan"></i>账号覆盖概览</h2>
+        <div class="acct-table-wrap">
+          <table class="acct-table" id="acctTable"></table>
+        </div>
+      </div>
+    </section>
 
+    <details class="quality-collapse" id="qualityCollapse">
+      <summary id="healthSummary"><i class="quality-dot"></i><span class="quality-summary-text">数据质量概览</span></summary>
+      <section class="notice" id="dataNotice" hidden></section>
+      <section class="health-strip" id="dataHealth" aria-label="数据质量概览"></section>
+    </details>
+
+    <section class="card detail-card" id="detailSection">
+      <h2 class="card-title"><i class="dot dot-gold"></i>文章明细
+        <span class="detail-search">
+          <input type="search" id="fSearch" aria-label="搜索内容" placeholder="搜索标题或摘要…">
+        </span>
+      </h2>
+      <div class="table-wrap">
+        <table class="detail-table" id="detailTable"></table>
+      </div>
+      <div class="pager" id="pager"></div>
+    </section>
+
+    <footer class="foot">
+      数据说明：总量仅汇总有公开值的文章，并在指标卡标明覆盖范围；未公开项显示 -；账号“当前 / 累计”用于区分筛选结果与账号历史覆盖。
+    </footer>
+  </main>
 </div>
 <script src="../lib/echarts.min.js"></script>
-  <script src="js/app.js?v=20260916-1"></script>
+<script src="../js/content-spotlight.js?v=20261118"></script>
+<script src="../js/publication-calendar.js?v=20261118"></script>
+<script src="js/app.js?v=20261118"></script>
 </body>
 </html>

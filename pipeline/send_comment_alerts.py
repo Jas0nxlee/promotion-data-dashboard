@@ -169,15 +169,41 @@ def send_pending(path: Path, config: dict) -> int:
         return 0
 
     sent = 0
+    refused = {}
+    index = 0
     with connect(config) as client:
-        while payload.get("emails"):
-            item = payload["emails"][0]
+        while index < len(pending):
+            item = pending[index]
             message = make_message(item, config["from_addr"])
-            client.send_message(message)
-            payload["emails"].pop(0)
+            # Keep the business route for reconciliation. A changed owner/address
+            # must never inherit the previous route's retry envelope.
+            retry = item.get("smtp_retry")
+            if retry and retry["route"] == item["to"]:
+                remaining = [addr for addr in message["To"].addresses
+                             if addr.addr_spec in retry["addresses"]]
+                if not remaining:
+                    raise ValueError("重试收件人与待发邮件地址不匹配")
+                message.replace_header("To", ", ".join(map(str, remaining)))
+            try:
+                rejected = client.send_message(message)
+            except smtplib.SMTPRecipientsRefused as exc:
+                refused.update(exc.recipients)
+                index += 1
+                continue
+            if rejected:
+                # send_message returns a mapping on partial acceptance. Persist
+                # the rejected subset before attempting another queued message.
+                item["smtp_retry"] = {"route": item["to"], "addresses": list(rejected)}
+                save_queue(path, payload)
+                refused.update(rejected)
+                index += 1
+                continue
+            pending.pop(index)
             save_queue(path, payload)
             sent += 1
-            print(f"已发送：{item.get('to')} · {item.get('subject')}")
+            print(f"已发送：{message['To']} · {item.get('subject')}")
+    if refused:
+        raise smtplib.SMTPRecipientsRefused(refused)
     print(f"发送完成：{sent} 封。")
     return sent
 

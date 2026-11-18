@@ -39,7 +39,6 @@ class LoginManager:
         self.active = None
         self.recovery_required = False
         self.lock = threading.RLock()
-        self.executor = ThreadPoolExecutor(max_workers=1)
         self.stopping = threading.Event()
         self.workspace.mkdir(parents=True, exist_ok=True, mode=0o700)
         os.chmod(self.workspace, 0o700)
@@ -51,42 +50,50 @@ class LoginManager:
             self.instance_lock.close()
             raise ProviderError('authorization_service_busy', '已有授权服务使用此工作目录') from None
         self.state_path = self.workspace / 'active.json'
-        self._recover()
+        try:
+            self._recover()
+        except Exception:
+            self.instance_lock.close()
+            raise
+        self.executor = ThreadPoolExecutor(max_workers=1)
         if start_reaper:
             threading.Thread(target=self._reap, daemon=True).start()
 
     def _recover(self):
-        if not self.state_path.exists():
-            return
         try:
-            old = json.loads(self.state_path.read_text())
-            if not isinstance(old, dict):
-                old = {}
+            old = json.loads(self.state_path.read_text(encoding='utf-8'))
+        except FileNotFoundError:
+            return
         except (OSError, ValueError):
-            old = {}
-        operation = old.get('operation_id', '')
-        if re.fullmatch(r'[a-f0-9]{32}', operation) and old.get('account') in self.catalog:
-            folder = self.workspace / operation
-            # Never trust persisted PIDs alone; bind them to this operation's arguments.
-            self._stop_recorded(old.get('worker_pid'), [str(ROOT / 'pipeline/authorization_worker.py'),
-                                 '--account', old['account'], '--output', str(folder / 'result.json')])
-            self._stop_recorded(old.get('pid'), ['--user-data-dir=' + str(folder / 'profile')])
-            with account_lock(old['account']):
-                state = self.auth.read(old['account'])
-                same = state.get('operation_id') in (None, operation)
-                committed = state.get('operation_id') == operation and state['status'] == 'authorized'
-                journal = folder / 'promotion-journal.json'
-                if journal.exists() and same and not committed:
-                    value = json.loads(journal.read_text())
-                    if value.get('account') != old['account'] or value.get('operation_id') != operation:
-                        raise ProviderError('recovery_failed', '授权恢复记录不匹配，已暂停启动')
-                    self._rollback(value)
-                if same and not committed:
-                    if state['status'] == 'authorizing':
-                        self.auth.cancel(old['account'], operation, 'service_restarted')
-                    elif state['status'] == 'untracked':
-                        self.auth.require_reauthorization(old['account'], 'service_restarted', '授权服务已重启，请重新授权')
-            shutil.rmtree(folder, ignore_errors=True)
+            raise ProviderError('recovery_failed', '无法读取授权恢复记录，已保留备份并暂停启动') from None
+        if not isinstance(old, dict):
+            raise ProviderError('recovery_failed', '授权恢复记录格式无效，已保留备份并暂停启动')
+        operation = old.get('operation_id')
+        key = old.get('account')
+        if (not isinstance(operation, str) or not re.fullmatch(r'[a-f0-9]{32}', operation)
+                or not isinstance(key, str) or key not in self.catalog):
+            raise ProviderError('recovery_failed', '授权恢复记录的账号或操作标识无效，已保留备份并暂停启动')
+        folder = self.workspace / operation
+        # Never trust persisted PIDs alone; bind them to this operation's arguments.
+        self._stop_recorded(old.get('worker_pid'), [str(ROOT / 'pipeline/authorization_worker.py'),
+                             '--account', key, '--output', str(folder / 'result.json')])
+        self._stop_recorded(old.get('pid'), ['--user-data-dir=' + str(folder / 'profile')])
+        with account_lock(key):
+            state = self.auth.read(key)
+            same = state.get('operation_id') in (None, operation)
+            committed = state.get('operation_id') == operation and state['status'] == 'authorized'
+            journal = folder / 'promotion-journal.json'
+            if journal.exists() and same and not committed:
+                value = json.loads(journal.read_text())
+                if value.get('account') != key or value.get('operation_id') != operation:
+                    raise ProviderError('recovery_failed', '授权恢复记录不匹配，已暂停启动')
+                self._rollback(value)
+            if same and not committed:
+                if state['status'] == 'authorizing':
+                    self.auth.cancel(key, operation, 'service_restarted')
+                elif state['status'] == 'untracked':
+                    self.auth.require_reauthorization(key, 'service_restarted', '授权服务已重启，请重新授权')
+        shutil.rmtree(folder, ignore_errors=True)
         self.state_path.unlink(missing_ok=True)
 
     @staticmethod

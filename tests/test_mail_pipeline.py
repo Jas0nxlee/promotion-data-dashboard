@@ -1,5 +1,6 @@
 import json
 import os
+import smtplib
 import sys
 import tempfile
 import unittest
@@ -66,6 +67,38 @@ class MailPipelineTests(unittest.TestCase):
             payload = json.loads(queue.read_text(encoding="utf-8"))
             self.assertEqual([], payload["emails"])
             self.assertEqual([{"platform": "sohu"}], payload["unmapped"])
+
+    def test_refused_mail_does_not_block_other_accounts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = Path(tmp) / "queue.json"
+            queue.write_text(json.dumps({"emails": [
+                {"to": "blocked@example.com", "subject": "first", "body": "one"},
+                {"to": "ok@example.com", "subject": "second", "body": "two"},
+            ]}))
+            fake = FakeSmtp()
+            refusals = {"blocked@example.com": (550, b"rejected")}
+            fake.send_message = mock.Mock(side_effect=[smtplib.SMTPRecipientsRefused(refusals), {}])
+            with mock.patch.object(send_comment_alerts, "connect", return_value=fake), \
+                    self.assertRaises(smtplib.SMTPRecipientsRefused):
+                send_comment_alerts.send_pending(queue, {"from_addr": "from@example.com"})
+            attempted = [str(call.args[0]["To"]) for call in fake.send_message.call_args_list]
+            self.assertEqual(["blocked@example.com", "ok@example.com"], attempted)
+            self.assertEqual(["blocked@example.com"], [m["to"] for m in json.loads(queue.read_text())["emails"]])
+
+    def test_partial_smtp_acceptance_retries_only_refused_addresses(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            queue = Path(tmp) / "queue.json"
+            queue.write_text(json.dumps({"emails": [
+                {"to": "first@example.com, second@example.com", "subject": "summary", "body": "comments"}
+            ]}))
+            fake = FakeSmtp()
+            fake.send_message = mock.Mock(side_effect=[{"second@example.com": (450, b"try later")}, {}])
+            with mock.patch.object(send_comment_alerts, "connect", return_value=fake):
+                with self.assertRaises(smtplib.SMTPRecipientsRefused):
+                    send_comment_alerts.send_pending(queue, {"from_addr": "from@example.com"})
+                self.assertEqual(1, send_comment_alerts.send_pending(queue, {"from_addr": "from@example.com"}))
+            self.assertEqual("second@example.com", str(fake.send_message.call_args.args[0]["To"]))
+            self.assertFalse(queue.exists())
 
     def test_smtp_config_requires_credentials_as_a_pair(self):
         env = {

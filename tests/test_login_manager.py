@@ -420,6 +420,39 @@ class LoginManagerTests(unittest.TestCase):
                 self.assertFalse((self.workspace / state['operation_id']).exists())
                 self.assertFalse(self.manager.state_path.exists())
 
+    def test_damaged_active_record_preserves_uncommitted_session_for_recovery(self):
+        class Crash(BaseException):
+            pass
+
+        state = self.start()
+        self.candidate()
+        original = self.baseline()
+        with patch.object(self.auth, 'complete', side_effect=Crash()), self.assertRaises(Crash):
+            self.manager._promote(self.manager.active, self.result())
+        journal = self.workspace / state['operation_id'] / 'promotion-journal.json'
+        journal_bytes = journal.read_bytes()
+        marker = self.manager.state_path
+        valid_marker = marker.read_bytes()
+        self.release_after_hard_crash()
+
+        for damaged in (b'{', b'null', b'{}',
+                        json.dumps({'account': FIRST, 'operation_id': 123}).encode(),
+                        json.dumps({'account': 'unknown-account', 'operation_id': state['operation_id']}).encode()):
+            with self.subTest(damaged=damaged):
+                marker.write_bytes(damaged)
+                with self.assertRaisesRegex(ProviderError, 'recovery_failed'):
+                    self.new_manager()
+                self.assertEqual(damaged, marker.read_bytes())
+                self.assertEqual(journal_bytes, journal.read_bytes())
+
+        marker.write_bytes(valid_marker)
+        self.manager = self.new_manager()
+        self.addCleanup(self.manager.close)
+        self.assertEqual(original, self.baseline())
+        self.assertEqual('reauth_required', self.auth.read(FIRST)['status'])
+        self.assertFalse(marker.exists())
+        self.assertFalse(journal.exists())
+
     def test_hard_crash_after_authorized_commit_keeps_new_files_and_evidence(self):
         class Crash(BaseException):
             pass

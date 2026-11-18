@@ -28,11 +28,13 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from snapshot_utils import (
+    SnapshotReadError,
     atomic_write_json,
     atomic_write_text,
     finalize_snapshot,
     is_suspicious_drop,
     merge_records,
+    read_previous_snapshot,
 )
 
 try:
@@ -175,16 +177,10 @@ PLATFORM_LABEL = {"douyin": "抖音", "bilibili": "B站", "wechat_channels": "�
 
 
 def collect(args, registry=None) -> dict:
-    client = registry or ProviderRegistry()
     cfg = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    previous = read_previous_snapshot(Path(args.out), "videos")
+    client = registry or ProviderRegistry()
     run_at = datetime.now(CN_TZ).isoformat()
-    previous = {"accounts": [], "videos": []}
-    previous_path = Path(args.out)
-    if previous_path.exists():
-        try:
-            previous = json.loads(previous_path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            pass
     result = {
         "updated_at": run_at,
         "source": "platform_direct",
@@ -404,7 +400,10 @@ def main():
         data = finalize_snapshot(make_mock(), "video")
     else:
         load_dotenv()
-        data = collect(args)
+        try:
+            data = collect(args)
+        except SnapshotReadError as exc:
+            sys.exit(str(exc))
 
     out = Path(args.out)
     atomic_write_json(out, data, pretty=True)

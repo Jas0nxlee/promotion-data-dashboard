@@ -37,6 +37,10 @@ def route_fixture(context, payload):
               "/articles/js/app.js": ("web/articles/js/app.js", "text/javascript"),
               "/css/style.css": ("web/css/style.css", "text/css"),
               "/lib/echarts.min.js": ("web/lib/echarts.min.js", "text/javascript")}
+    for asset in ("css/maitian.css", "css/workspace.css", "css/content-spotlight.css",
+                  "css/publication-calendar.css", "js/content-spotlight.js", "js/publication-calendar.js"):
+        content_type = "text/css" if asset.endswith(".css") else "text/javascript"
+        assets["/" + asset] = ("web/" + asset, content_type)
     def route(request):
         parsed = urlsplit(request.request.url)
         if parsed.netloc != "127.0.0.1:18799":
@@ -74,6 +78,19 @@ class ArticlePeopleMetricsTests(unittest.TestCase):
     def tearDown(self):
         self.context.close()
         self.assertEqual([], self.errors)
+
+    def test_recent_releases_and_calendar_follow_mobile_platform_filter(self):
+        self.page.set_viewport_size({"width": 390, "height": 844})
+        self.page.select_option("#fPlatform", "csdn")
+        self.assertEqual("公开平台次数示例", self.page.locator(".spot-title").inner_text())
+        self.assertFalse(self.page.locator("#publicationCalendar").is_visible())
+        self.page.locator("label", has=self.page.locator("#showMonth")).click()
+        day = self.page.locator('.pubcal-day[data-calendar-key="2026-09-16"]')
+        day.click()
+        self.assertEqual(["公开平台次数示例"], self.page.locator(".pubcal-detail li").all_text_contents())
+        self.page.select_option("#fPlatform", "wechat_subscription")
+        self.assertCountEqual(["公众号人数缺失示例", "旧公众号无人数字段"],
+                              self.page.locator(".pubcal-detail li").all_text_contents())
 
     def test_people_values_missing_values_and_original_comment_count_are_separate(self):
         row = self.page.locator("#detailTable tr").filter(has_text="公众号人数完整示例")

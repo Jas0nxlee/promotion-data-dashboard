@@ -4,12 +4,126 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>账号授权与验证 · 推广数据大屏</title>
 <style>
-*{box-sizing:border-box}body{margin:0;background:#f4f6f9;color:#18283d;font:15px/1.6 system-ui,sans-serif}main{max-width:1250px;margin:40px auto;padding:0 24px}h1{font-size:30px;margin:0 0 6px}h2{font-size:21px;margin:0}p{color:#53667d}.top{display:flex;justify-content:space-between;align-items:center;gap:12px;margin:24px 0}#refresh{white-space:nowrap;flex-shrink:0}.badge{background:#e6edf7;padding:6px 14px;border-radius:20px}.table-wrap{overflow-x:auto}table{width:100%;border-collapse:collapse;background:white;border:1px solid #dce4ee}th,td{text-align:left;padding:14px 16px;border-bottom:1px solid #e6ebf1;vertical-align:top}th{background:#eef3f9;font-weight:600}button,.desktop-link{font:inherit;cursor:pointer;border:1px solid #b8c9dd;border-radius:6px;padding:6px 11px;background:white;color:#214b7b;margin:2px;text-decoration:none;display:inline-block}button.primary{background:#185ec0;color:white;border-color:#185ec0}button:disabled{opacity:.5;cursor:default}.muted{font-size:12px;color:#637890}.ok{color:#187646}.pending{color:#8a5b08}#notice{min-height:32px;color:#214b7b;overflow-wrap:anywhere}.authorization{margin:0 0 24px;background:#fff;border:1px solid #b6cbea;border-radius:12px;padding:22px}.authorization[hidden], [hidden]{display:none!important}.authorization .top{margin:0 0 8px;align-items:flex-start}.authorization p{margin:8px 0}.authorization iframe{width:100%;height:560px;border:1px solid #dce4ee;border-radius:8px;background:#eef3f9}.authorization-status{font-weight:600;color:#214b7b}.authorization-actions{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:14px}#authorization-message{overflow-wrap:anywhere}.account-actions{min-width:220px}.account-message{max-width:290px;overflow-wrap:anywhere}dialog{border:0;border-radius:12px;width:min(850px,95vw);box-shadow:0 20px 80px #0004}dialog::backdrop{background:#16284166}textarea{width:100%;min-height:340px;border:1px solid #c0cfdd;border-radius:6px;padding:15px;font:13px/1.5 monospace}#notification-editor select,#notification-editor input{font:inherit;border:1px solid #b8c9dd;border-radius:6px;padding:8px;margin-top:5px}#notification-editor select{min-width:170px}.actions{text-align:right;margin-top:15px}@media(max-width:700px){main{margin:24px auto;padding:0 14px}th,td{padding:10px}table{min-width:700px}.top{align-items:flex-start}h1{font-size:25px}.authorization{padding:15px}.authorization iframe{height:440px}.authorization .top{display:block}.badge{display:inline-block;font-size:13px}}
+:root {
+  color-scheme: light;
+  --bg: #f5f5f7;
+  --card: #fff;
+  --text: #1d1d1f;
+  --muted: #636369;
+  --line: rgba(0, 0, 0, .09);
+  --accent: #0071e3;
+  --shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 6px 20px rgba(0, 0, 0, .05);
+}
+* { box-sizing: border-box; }
+[hidden] { display: none !important; }
+body {
+  margin: 0;
+  color: var(--text);
+  background: radial-gradient(75% 240px at 8% 0, #e9f1fc 0%, transparent 90%), var(--bg);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+  font-variant-numeric: tabular-nums;
+  -webkit-font-smoothing: antialiased;
+}
+main { width: min(1360px, 100%); margin: 0 auto; padding: clamp(24px, 4vw, 54px) clamp(14px, 3vw, 42px) 50px; }
+h1, h2, p { margin: 0; }
+h1 { font-size: clamp(26px, 3vw, 38px); line-height: 1.22; font-weight: 650; letter-spacing: -.035em; }
+h2 { font-size: 19px; line-height: 1.32; font-weight: 640; }
+p { color: var(--muted); overflow-wrap: anywhere; }
+.page-head, .top, .authorization-actions, .actions { display: flex; align-items: center; gap: 10px 16px; }
+.page-head { flex-wrap: wrap; justify-content: space-between; margin-bottom: 22px; }
+.page-head p { margin-top: 7px; }
+button, .desktop-link, select, input, textarea { font: inherit; }
+button, .desktop-link {
+  display: inline-flex; justify-content: center; align-items: center;
+  min-height: 34px; padding: 6px 13px;
+  border: 1px solid transparent; border-radius: 999px; cursor: pointer;
+  color: #005cb9; background: #edf4ff; text-decoration: none;
+}
+button:not(:disabled):hover, .desktop-link:hover { background: #dceaff; }
+button.primary, #refresh { color: #fff; background: var(--accent); }
+button.primary:not(:disabled):hover, #refresh:hover { background: #0062c8; }
+button:disabled { color: #737378; background: #f3f3f5; cursor: default; }
+:where(button, a, textarea, select, input):focus-visible { outline: 3px solid #358bfc; outline-offset: 3px; }
+#refresh { flex: none; min-height: 38px; padding-inline: 18px; font-weight: 550; }
+.badge, .state {
+  display: inline-flex; align-items: center; gap: 6px; width: fit-content;
+  border-radius: 999px; padding: 3px 9px; font-size: 12px; line-height: 1.6;
+  color: #515157; background: #f1f1f4;
+}
+.state::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.good { color: #137537; background: #e7f6ec; }
+.info { color: #075aaf; background: #e6f0fc; }
+.warn { color: #895005; background: #fff1dc; }
+.bad { color: #bd152b; background: #fde8ea; }
+.muted { color: var(--muted); font-size: 12px; }
+#notice:not(:empty) { margin: 0 0 16px; border-radius: 12px; padding: 10px 14px; background: #e6f0fc; color: #104c90; overflow-wrap: anywhere; }
+.authorization, .accounts, dialog { background: var(--card); border-radius: 20px; box-shadow: var(--shadow); }
+.authorization { padding: clamp(16px, 2vw, 26px); margin-bottom: 18px; }
+.top { justify-content: space-between; flex-wrap: wrap; }
+.authorization p { margin: 8px 0; }
+.authorization-status { color: #154e9f; font-weight: 600; }
+.authorization iframe { display: block; width: 100%; height: clamp(360px, 62vh, 660px); border: 1px solid var(--line); border-radius: 12px; background: #f5f5f7; }
+.authorization-actions { flex-wrap: wrap; margin: 14px 0; }
+.accounts { overflow: hidden; }
+.accounts .top { padding: 18px 20px 14px; }
+.table-wrap { overflow-x: auto; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 13px 12px; vertical-align: top; }
+th { background: #f8f8fa; border-block: 1px solid var(--line); color: var(--muted); font-size: 12px; font-weight: 550; white-space: nowrap; }
+td { border-bottom: 1px solid var(--line); font-size: 13px; overflow-wrap: anywhere; }
+td:first-child, th:first-child { padding-left: 20px; }
+td:first-child { font-size: 14px; font-weight: 600; }
+td:last-child, th:last-child { padding-right: 20px; }
+tbody tr:last-child td { border-bottom: 0; }
+.account-message { margin-top: 5px; max-width: 250px; }
+.account-actions { width: 230px; }
+.account-actions button { margin: 0 3px 3px 0; min-height: 30px; padding: 4px 10px; font-size: 12px; }
+.footer-note { margin: 12px 4px 0; }
+dialog { border: 0; width: min(720px, calc(100% - 28px)); max-height: calc(100dvh - 32px); padding: clamp(18px, 3vw, 30px); color: var(--text); box-shadow: 0 20px 80px #0003; }
+dialog::backdrop { background: #20212b66; }
+dialog p { margin: 12px 0; }
+textarea, select, input { max-width: 100%; color: var(--text); background: #f8f8fa; border: 1px solid #d5d5dc; border-radius: 9px; }
+textarea { width: 100%; min-height: min(340px, 38vh); padding: 12px; font: 13px/1.5 ui-monospace, monospace; resize: vertical; }
+#notification-editor select, #notification-editor input { padding: 8px 10px; }
+#notification-editor select { margin-left: 8px; }
+#notification-editor input { width: min(100%, 420px); margin-top: 5px; }
+.actions { justify-content: flex-end; flex-wrap: wrap; margin-top: 15px; }
+
+@media (max-width: 850px) {
+  .accounts { padding: 0 14px; }
+  .accounts .top { padding: 16px 0 12px; align-items: flex-start; }
+  .table-wrap { overflow: visible; }
+  table, tbody { display: block; }
+  thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
+  tbody tr {
+    display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: start; gap: 8px 12px;
+    padding: 14px 0; border-top: 1px solid var(--line);
+  }
+  td, td:first-child, td:last-child { border: 0; padding: 0; }
+  td:first-child { font-size: 16px; }
+  td:nth-child(2) { justify-self: end; font-size: 12px; color: var(--muted); }
+  td:nth-child(3)::before, td:nth-child(4)::before, td:nth-child(5)::before {
+    display: block; margin-bottom: 3px; font-size: 11px; color: var(--muted);
+  }
+  td:nth-child(3)::before { content: "登录授权"; }
+  td:nth-child(4)::before { content: "采集验证"; }
+  td:nth-child(5)::before { content: "评论邮件通知"; }
+  td:nth-child(5), .account-actions { grid-column: 1 / -1; width: auto; }
+  .account-actions button { min-height: 36px; padding-inline: 11px; }
+  .account-message { max-width: none; }
+}
+@media (max-width: 540px) {
+  .page-head { align-items: flex-start; }
+  .page-head p { font-size: 13px; }
+  .authorization-actions > * { min-height: 40px; }
+  .authorization .top { align-items: flex-start; }
+}
 </style>
 <main>
-<h1>账号授权与验证</h1>
-<p>在授权窗口登录目标账号，验证身份后保存授权。公开网页采集的账号无需登录。此页面用于授权与只读验证。</p>
-<div class="top"><span id="summary" class="badge">正在读取账号清单</span><button id="refresh">刷新状态</button></div>
+<header class="page-head">
+  <div><h1>账号授权与验证</h1><p>在授权窗口登录目标账号，验证身份后保存授权。公开网页采集的账号无需登录。</p></div>
+  <button id="refresh">刷新状态</button>
+</header>
 <div id="notice" role="status" aria-live="polite"></div>
 <section id="authorization" class="authorization" hidden aria-labelledby="authorization-title">
   <div class="top"><div><h2 id="authorization-title">账号授权</h2><p id="authorization-target"></p></div><span id="authorization-state" class="badge"></span></div>
@@ -21,11 +135,14 @@
   <div class="authorization-actions"><button id="authorization-complete" class="primary">已完成登录，验证并保存</button><button id="authorization-cancel">取消授权</button><a id="desktop-link" class="desktop-link" target="_blank" rel="noopener noreferrer" hidden>单独打开授权桌面</a></div>
   <p class="muted">同一时间只授权一个账号。保存前会检查身份和会话恢复；内容完整性、指标及评论覆盖以“采集验证”列的结果为准。</p>
 </section>
+<section class="accounts" aria-labelledby="accounts-title">
+<div class="top"><h2 id="accounts-title">账号清单</h2><span id="summary" class="badge">正在读取账号清单</span></div>
 <div class="table-wrap"><table><thead><tr><th>账号</th><th>平台</th><th>登录授权</th><th>采集验证</th><th>评论邮件通知</th><th>操作</th></tr></thead><tbody id="rows"></tbody></table></div>
-<p class="muted">授权过期时可重新授权。“采集验证通过”须满足当前平台的数据覆盖要求；修改配置后请重新验证。</p>
+</section>
+<p class="muted footer-note">授权过期时可重新授权。“采集验证通过”须满足当前平台的数据覆盖要求；修改配置后请重新验证。</p>
 </main>
 <dialog id="editor"><h2 id="editTitle">采集配置</h2><p>用于授权后的流程校准。请勿在此填写密码或登录凭证。</p><textarea id="config" aria-label="账号采集配置"></textarea><div class="actions"><button id="cancel">取消</button><button id="save" class="primary">保存配置</button></div></dialog>
-<dialog id="notification-editor"><h2 id="notification-title">评论邮件通知</h2><p>仅设置当前账号的新评论邮件。关闭后，尚未发送的该账号提醒也会停止发送；本地测试不会发送邮件。</p><label for="notification-mode">通知方式</label><select id="notification-mode"><option value="inherit">沿用平台默认</option><option value="enabled">单独开启</option><option value="disabled">关闭通知</option></select><p id="notification-default" class="muted"></p><div id="notification-fields"><p><label for="notification-email">收件人邮箱</label><br><input id="notification-email" type="email" autocomplete="off" maxlength="254" style="width:min(100%,420px);padding:8px"></p><p><label for="notification-owner">负责人（可选）</label><br><input id="notification-owner" maxlength="80" style="width:min(100%,420px);padding:8px"></p></div><div class="actions"><button id="notification-cancel">取消</button><button id="notification-save" class="primary">保存通知设置</button></div></dialog>
+<dialog id="notification-editor"><h2 id="notification-title">评论邮件通知</h2><p>仅设置当前账号的新评论邮件。关闭后，尚未发送的该账号提醒也会停止发送；本地测试不会发送邮件。</p><label for="notification-mode">通知方式</label><select id="notification-mode"><option value="inherit">沿用平台默认</option><option value="enabled">单独开启</option><option value="disabled">关闭通知</option></select><p id="notification-default" class="muted"></p><div id="notification-fields"><p><label for="notification-email">收件人邮箱</label><br><input id="notification-email" type="email" autocomplete="off" maxlength="254"></p><p><label for="notification-owner">负责人（可选）</label><br><input id="notification-owner" maxlength="80"></p></div><div class="actions"><button id="notification-cancel">取消</button><button id="notification-save" class="primary">保存通知设置</button></div></dialog>
 <script>
 const csrf="__CSRF_TOKEN__";
 const labels={bilibili:"B站",douyin:"抖音",wechat_channels:"视频号",xiaohongshu:"小红书",zhihu:"知乎",wechat_service:"服务号",wechat_subscription:"订阅号",csdn:"CSDN",elecfans:"电子发烧友",baijiahao:"百家号",sohu:"搜狐号",toutiao:"今日头条"};
@@ -66,6 +183,7 @@ function renderAuthorization(){
   el("authorization-guide").textContent=accountFor(session.account)?.platform==="xiaohongshu"?"请在创作后台和小红书主站两个页面都登录同一个目标账号，再点击“已完成登录，验证并保存”。":"请扫码或使用平台提供的登录方式，确认当前登录的是目标账号。登录后点击“已完成登录，验证并保存”。";
   el("authorization-target").textContent="目标账号："+accountName(session.account);
   el("authorization-state").textContent=verifying?"正在验证并保存":expired()?"授权窗口已超时":session.state==="error"?"授权未完成":"等待登录";
+  el("authorization-state").className = "badge " + (expired() || session.state === "error" ? "bad" : verifying ? "info" : "warn");
   el("authorization-message").textContent=session.message||(verifying?"正在核验账号并保存授权，请稍候。":"请确认目标账号后完成登录。");
   const date=sessionExpiry();
   el("authorization-expiry").textContent=date?`本次授权截止：${date.toLocaleString("zh-CN",{hour12:false})}${expired()?"。请取消本次授权后重新开始。":"，请在此之前完成登录。"}`:"请在本次授权窗口关闭前完成登录。";
@@ -83,7 +201,23 @@ function renderAccounts(){
     let dataText=health.ready?"采集验证通过":health.identity_verified?"数据覆盖待验证":"尚未通过验证";
     if(account.job?.running)dataText="只读验证中";
     if(health.ready)ready++;if(!isPublic&&state==="authorized")authorized++;
-    for(const value of [account.name,labels[account.platform]||account.platform,authText,dataText]){const td=document.createElement("td");td.textContent=value;tr.append(td)}
+    const authTone = isPublic ? "" : isActive ? "info" : {
+      authorized: "good", authorizing: "info", reauth_required: "bad", unverified: "warn"
+    }[state] || "";
+    const dataTone = account.job?.running ? "info" : health.ready ? "good" : health.identity_verified ? "warn" : "";
+    for (const value of [account.name, labels[account.platform] || account.platform]) {
+      const td = document.createElement("td");
+      td.textContent = value;
+      tr.append(td);
+    }
+    for (const [text, tone] of [[authText, authTone], [dataText, dataTone]]) {
+      const td = document.createElement("td");
+      const chip = document.createElement("span");
+      chip.className = "state " + tone;
+      chip.textContent = text;
+      td.append(chip);
+      tr.append(td);
+    }
     const commentCoverage=health.metric_coverage?.comment;
     if(health.optional_metric_keys?.includes("comment")&&typeof commentCoverage==="number"&&commentCoverage<1){const note=document.createElement("div");note.className="muted account-message";note.textContent=`部分文章未提供留言数（覆盖 ${(commentCoverage*100).toFixed(1)}%），缺失保持未知。`;tr.children[3].append(note)}
     if(auth.message&&!isActive){const message=document.createElement("div");message.className="muted account-message";message.textContent=auth.message;tr.children[2].append(message)}

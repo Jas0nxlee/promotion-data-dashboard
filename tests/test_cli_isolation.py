@@ -11,6 +11,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class CliIsolationTests(unittest.TestCase):
+    def test_unusable_previous_snapshot_preserves_all_outputs(self):
+        for command, stem, web_path in (
+                ("fetch_data.py", "dashboard_data", "web/data"),
+                ("fetch_article_data.py", "article_dashboard_data", "web/articles/data")):
+            for damaged in (b'{"accounts":[', b'{"accounts":[]}'):
+                with self.subTest(command=command, damaged=damaged), tempfile.TemporaryDirectory() as tmp:
+                    runtime = Path(tmp)
+                    data = runtime / "data"
+                    web = runtime / web_path
+                    data.mkdir()
+                    web.mkdir(parents=True)
+                    outputs = {data / f"{stem}.json": damaged,
+                               web / f"{stem}.json": b'{"previous":"published"}',
+                               web / f"{stem}.js": b'window.previous = true;'}
+                    for path, original in outputs.items():
+                        path.write_bytes(original)
+                    env = {**os.environ, "PROMOTION_TEST_MODE": "1", "PROMOTION_RUNTIME_DIR": tmp,
+                           "PROMOTION_DATA_DIR": str(data), "PROMOTION_SESSION_DIR": str(runtime / "sessions"),
+                           "PROMOTION_PROVIDER_CONFIG": str(runtime / "providers.json")}
+                    # Only select an account with no local login or public HTTP collector.
+                    account = "bilibili" if command == "fetch_data.py" else "zhihu"
+                    result = subprocess.run([sys.executable, str(ROOT / "pipeline" / command), "--only", account],
+                                            env=env, capture_output=True, text=True, timeout=30)
+                    for path, original in outputs.items():
+                        self.assertEqual(original, path.read_bytes(), path.name)
+                    self.assertNotEqual(0, result.returncode)
+                    self.assertIn("无法读取历史快照", result.stderr)
+                    self.assertNotIn(">>> 采集", result.stdout)
+
     def test_missing_sessions_preserve_snapshots_and_fail_explicitly_without_network(self):
         with tempfile.TemporaryDirectory(prefix="promotion-cli-") as tmp:
             runtime = Path(tmp)

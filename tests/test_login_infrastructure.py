@@ -174,7 +174,9 @@ class LoginInfrastructureTests(unittest.TestCase):
                 self.assertNotIn("depends_on", login)
                 provider_mount = next(v for v in login["volumes"] if v["target"] == "/run/promotion/providers")
                 self.assertFalse(provider_mount.get("read_only", False))
-                self.assertFalse(provider_mount["bind"]["create_host_path"])
+                self.assertEqual("bind", provider_mount["type"])
+                # Compose v2.40 omits false values in its normalized JSON.
+                self.assertFalse(provider_mount["bind"].get("create_host_path", False))
                 self.assertFalse(provider_mount["source"].endswith("providers.json"))
                 base_mounts = [v for v in services[base_service]["volumes"] if v["target"] in ("/run/promotion/providers", "/config-private")]
                 self.assertEqual(1, len(base_mounts)); self.assertTrue(base_mounts[0]["read_only"])

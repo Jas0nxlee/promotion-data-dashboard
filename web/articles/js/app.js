@@ -3,16 +3,16 @@
 
 const METRICS = { read: "阅读", like: "点赞", comment: "评论", share: "分享", collect: "收藏" };
 const PLATFORM_COLOR = {
-  csdn: "#fc5531", elecfans: "#28b6a8", baijiahao: "#4f8cff",
-  zhihu: "#3b82f6", wechat_service: "#22c55e", wechat_subscription: "#63d391",
-  toutiao: "#ff5a5f", sohu: "#f4b942", xiaohongshu: "#ff2442",
+  csdn: "#b3472b", elecfans: "#007e84", baijiahao: "#385ea5",
+  zhihu: "#1672b1", wechat_service: "#13824a", wechat_subscription: "#398247",
+  toutiao: "#b7333e", sohu: "#906513", xiaohongshu: "#bc2545",
 };
 const PLATFORM_LABEL = {
   csdn: "CSDN", elecfans: "电子发烧友", baijiahao: "百家号",
   zhihu: "知乎", wechat_service: "服务号", wechat_subscription: "订阅号",
   toutiao: "今日头条", sohu: "搜狐", xiaohongshu: "小红书",
 };
-const LINE_COLOR = { "望获": "#f5c34d", "芯片": "#a78bfa", "土星云": "#38bdf8", "环宇": "#34d399" };
+const LINE_COLOR = { "望获": "#a4600d", "芯片": "#6556af", "土星云": "#00769e", "环宇": "#25834c" };
 const STATUS_LABEL = { ok: "完整", partial: "部分", pending: "待配置", stale: "缓存", error: "失败" };
 const PERIOD_LABEL = { all: "全部时间", 30: "近 30 天", 90: "近 90 天", 365: "近 1 年" };
 const PAGE_SIZE = 18;
@@ -84,12 +84,14 @@ function exportDate() {
 
 function showExportResult(text) {
   const button = $("exportData");
+  const original = button._exportContents ??= Array.from(button.childNodes);
   clearTimeout(button._resetTimer);
   button.disabled = true;
   button.textContent = text;
   button._resetTimer = setTimeout(() => {
     button.disabled = false;
-    button.textContent = "导出数据";
+    button.replaceChildren(...original);
+    delete button._exportContents;
   }, 1600);
 }
 
@@ -161,22 +163,26 @@ function recentMonths(items, limit = 24) {
 function makeChart(id, option) {
   if (!charts[id]) charts[id] = echarts.init($(id));
   charts[id].setOption({
-    animationDuration: 450,
+    textStyle: { fontFamily: 'system-ui, "PingFang SC", "Microsoft YaHei", sans-serif', color: "#1d1d1f" },
+    animation: !window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+    animationDuration: 300,
     animationDurationUpdate: 300,
     aria: { enabled: true, decal: { show: false } },
     ...option,
+    tooltip: { confine: true, borderColor: "#d5d5db", textStyle: { color: "#1d1d1f", fontSize: 12 }, ...option.tooltip },
   }, true);
 }
 
 const AXIS_STYLE = {
-  axisLine: { lineStyle: { color: "#2c4170" } },
-  axisLabel: { color: "#8296bd", fontSize: 11 },
-  splitLine: { lineStyle: { color: "rgba(44,65,112,.35)" } },
+  axisTick: { show: false },
+  axisLine: { lineStyle: { color: "#d5d5db" } },
+  axisLabel: { color: "#67676e", fontSize: 11, hideOverlap: true },
+  splitLine: { lineStyle: { color: "#e4e5eb", type: "dashed" } },
 };
 
 function colorWithAlpha(hex, alpha) {
   const value = String(hex || "").replace("#", "");
-  if (!/^[0-9a-f]{6}$/i.test(value)) return `rgba(56,217,245,${alpha})`;
+  if (!/^[0-9a-f]{6}$/i.test(value)) return `rgba(0,113,227,${alpha})`;
   return `rgba(${parseInt(value.slice(0, 2), 16)},${parseInt(value.slice(2, 4), 16)},${parseInt(value.slice(4, 6), 16)},${alpha})`;
 }
 
@@ -203,10 +209,11 @@ function accountAxisLabel(rows) {
       const account = rows[index]?.account;
       if (!account) return "";
       const label = account.platform_label || platformLabel(account.platform);
-      return `{account|${richText(account.account_name)}}  {platform_${account.platform}|${richText(label)}}`;
+      const name = echarts.format.truncateText(richText(account.account_name), 70, "500 12px system-ui, sans-serif", "…");
+      return `{account|${name}}  {platform_${account.platform}|${richText(label)}}`;
     },
     rich: {
-      account: { color: "#dce6f8", fontSize: 12, fontWeight: 600, lineHeight: 20 },
+      account: { color: "#1d1d1f", fontSize: 12, fontWeight: 500, lineHeight: 20 },
       ...platformStyles,
     },
   };
@@ -312,34 +319,23 @@ function renderKPI(articles, associations) {
   const collect = metricSummary(articles, "collect");
   const share = metricSummary(articles, "share");
   const tiles = [
-    { label: "有数据账号", value: covered, sub: `${accounts.length} 个筛选账号`, accent: "#38d9f5", raw: true },
+    { label: "有数据账号", value: covered, sub: `${accounts.length} 个筛选账号`, coverage: accounts.length ? covered / accounts.length : null, accent: "#0071e3", raw: true },
     { label: "已采集文章", value: articles.length,
-      sub: associations.length === articles.length ? "按公开文章去重" : `${associations.length} 条账号记录，已去重`, accent: "#34d399", raw: true },
-    { label: "总阅读", value: read.value, sub: coverageText(read), accent: "#f5c34d" },
-    { label: "总点赞", value: like.value, sub: coverageText(like), accent: "#ff5d7e" },
-    { label: "总评论", value: comment.value, sub: coverageText(comment), accent: "#a78bfa" },
-    { label: "总收藏", value: collect.value, sub: coverageText(collect), accent: "#38bdf8" },
-    { label: "总分享", value: share.value, sub: coverageText(share), accent: "#34d399" },
-    { label: "近 30 日发布", value: recent, sub: "按公开发布时间", accent: "#fbbf24", raw: true },
+      sub: associations.length === articles.length ? "按公开文章去重" : `${associations.length} 条账号记录，已去重`, accent: "#25834c", raw: true },
+    { label: "总阅读", value: read.value, sub: coverageText(read), coverage: read.total ? read.rate : null, accent: "#a4600d" },
+    { label: "总点赞", value: like.value, sub: coverageText(like), coverage: like.total ? like.rate : null, accent: "#b83f61" },
+    { label: "总评论", value: comment.value, sub: coverageText(comment), coverage: comment.total ? comment.rate : null, accent: "#6556af" },
+    { label: "总收藏", value: collect.value, sub: coverageText(collect), coverage: collect.total ? collect.rate : null, accent: "#00769e" },
+    { label: "总分享", value: share.value, sub: coverageText(share), coverage: share.total ? share.rate : null, accent: "#25834c" },
+    { label: "近 30 日发布", value: recent, sub: "按公开发布时间", accent: "#a4600d", raw: true },
   ];
   $("kpiStrip").innerHTML = tiles.map((tile) => `
     <div class="kpi" style="--accent:${tile.accent}">
       <div class="kpi-label">${tile.label}</div>
-      <div class="kpi-value" data-val="${tile.value ?? ""}" data-raw="${tile.raw ? 1 : 0}">${tile.value === null ? "-" : "0"}</div>
+      <div class="kpi-value" data-val="${tile.value ?? ""}">${tile.raw ? fmtFull(tile.value) : fmt(tile.value)}</div>
+      ${tile.coverage == null ? "" : `<meter class="kpi-coverage" min="0" max="1" value="${tile.coverage}" aria-label="${tile.label}的数据覆盖率"></meter>`}
       <div class="kpi-sub">${tile.sub}</div>
     </div>`).join("");
-  document.querySelectorAll(".kpi-value").forEach((element) => {
-    if (element.dataset.val === "") { element.textContent = "-"; return; }
-    const target = Number(element.dataset.val);
-    const raw = element.dataset.raw === "1";
-    const started = performance.now();
-    (function tick(now) {
-      const progress = Math.min((now - started) / 700, 1);
-      const current = Math.round(target * (1 - Math.pow(1 - progress, 3)));
-      element.textContent = raw ? current.toLocaleString("zh-CN") : fmt(current);
-      if (progress < 1) requestAnimationFrame(tick);
-    })(started);
-  });
 }
 
 /* ---------- 平台文章分布 ---------- */
@@ -353,25 +349,27 @@ function renderDist(articles) {
       trigger: "axis", axisPointer: { type: "shadow" },
       formatter: (params) => {
         const row = rows[params[0]?.dataIndex];
+        if (!row) return "";
         const rate = articles.length ? row.value / articles.length : 0;
         return `<b>${esc(platformLabel(row.platform))}</b><br>${fmtFull(row.value)} 篇（${fmtPct(rate)}）`;
       },
     },
     grid: { left: 8, right: 48, top: 8, bottom: 8, containLabel: true },
-    xAxis: { type: "value", ...AXIS_STYLE, axisLabel: { ...AXIS_STYLE.axisLabel, formatter: (value) => fmt(value) } },
+    xAxis: { type: "value", show: false },
     yAxis: {
       type: "category", data: rows.map((row) => platformLabel(row.platform)), ...AXIS_STYLE,
-      axisLabel: { ...AXIS_STYLE.axisLabel, color: "#dce6f8", interval: 0, fontSize: 10 },
+      axisLine: { show: false }, splitLine: { show: false },
+      axisLabel: { ...AXIS_STYLE.axisLabel, color: "#1d1d1f", interval: 0, fontSize: 10 },
     },
     series: [{
-      type: "bar", barMaxWidth: 15,
+      type: "bar", barMaxWidth: 15, showBackground: true, backgroundStyle: { color: "#f1f3f7", borderRadius: 3 },
       data: rows.map((row) => ({
         value: row.value,
-        itemStyle: { color: PLATFORM_COLOR[row.platform] || "#8296bd", borderRadius: [0, 6, 6, 0] },
+        itemStyle: { color: PLATFORM_COLOR[row.platform] || "#67676e", borderRadius: 3 },
       })),
-      label: { show: true, position: "right", color: "#8296bd", fontSize: 10, formatter: (params) => fmt(params.value) },
+      label: { show: true, position: "right", color: "#67676e", fontSize: 10, formatter: (params) => fmt(params.value) },
     }],
-    graphic: rows.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "当前筛选无文章", fill: "#8296bd" } }],
+    graphic: rows.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "当前筛选无文章", fill: "#67676e" } }],
   });
 }
 
@@ -398,28 +396,32 @@ function renderTrend(articles) {
     months.some((month) => values[platform][month].available > 0));
   makeChart("chartTrend", {
     tooltip: { trigger: "axis", valueFormatter: (value) => value === null ? "-" : fmtFull(value) },
-    legend: { top: 0, type: "scroll", textStyle: { color: "#8296bd", fontSize: 10 }, itemWidth: 9, itemHeight: 9 },
-    grid: { left: 8, right: 8, top: 38, bottom: 4, containLabel: true },
+    legend: {
+      bottom: 0, left: 4, right: 4, type: "scroll", textStyle: { color: "#67676e", fontSize: 11 },
+      itemGap: 14, itemWidth: 16, itemHeight: 7, pageIconColor: "#0071e3", pageTextStyle: { color: "#67676e" },
+    },
+    grid: { left: 6, right: 6, top: 30, bottom: 32, containLabel: true },
     xAxis: { type: "category", data: months, boundaryGap: false, ...AXIS_STYLE },
     yAxis: [
-      { type: "value", name: "阅读量", nameTextStyle: { color: "#8296bd" }, ...AXIS_STYLE,
+      { type: "value", splitNumber: 3, minInterval: 1, name: "阅读量", nameTextStyle: { color: "#67676e", fontSize: 10 }, nameGap: 12, ...AXIS_STYLE,
         axisLabel: { ...AXIS_STYLE.axisLabel, formatter: (value) => fmt(value) } },
-      { type: "value", name: "发布数", nameTextStyle: { color: "#8296bd" }, ...AXIS_STYLE, splitLine: { show: false } },
+      { type: "value", splitNumber: 3, minInterval: 1, name: "发布数", nameTextStyle: { color: "#67676e", fontSize: 10 }, nameGap: 12, ...AXIS_STYLE, splitLine: { show: false } },
     ],
     series: [
       ...availablePlatforms.map((platform) => ({
-        name: `${platformLabel(platform)}阅读`, type: "line", stack: "read", smooth: true,
-        symbol: "none", connectNulls: false, areaStyle: { opacity: .2 }, lineStyle: { width: 1.4 },
-        itemStyle: { color: PLATFORM_COLOR[platform] || "#8296bd" }, emphasis: { focus: "series" },
+        name: `${platformLabel(platform)}阅读`, type: "line", stack: "read", smooth: false,
+        symbol: "circle", symbolSize: 3.5, showAllSymbol: true, connectNulls: false,
+        areaStyle: { opacity: .14 }, lineStyle: { width: 2.25 },
+        itemStyle: { color: PLATFORM_COLOR[platform] || "#67676e" }, emphasis: { focus: "series" },
         data: months.map((month) => values[platform][month].available ? values[platform][month].sum : null),
       })),
       {
-        name: "发布数", type: "line", yAxisIndex: 1, smooth: true,
-        symbol: "circle", symbolSize: 5, lineStyle: { width: 2, type: "dashed" },
-        itemStyle: { color: "#f5c34d" }, data: months.map((month) => countByMonth[month]),
+        name: "发布数", type: "line", yAxisIndex: 1, smooth: false,
+        symbol: "diamond", symbolSize: 5, showSymbol: months.length <= 8, lineStyle: { width: 2, type: "dashed" },
+        itemStyle: { color: "#a4600d" }, data: months.map((month) => countByMonth[month]),
       },
     ],
-    graphic: months.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "当前筛选无趋势数据", fill: "#8296bd" } }],
+    graphic: months.length ? [] : [{ type: "text", left: "center", top: "middle", style: { text: "当前筛选无趋势数据", fill: "#67676e" } }],
   });
 }
 
@@ -459,20 +461,20 @@ function renderRadar(articles) {
         }).join("<br>");
       },
     },
-    legend: { bottom: 0, textStyle: { color: "#8296bd", fontSize: 10 }, itemWidth: 9, itemHeight: 9 },
+    legend: { bottom: 0, textStyle: { color: "#67676e", fontSize: 10 }, itemWidth: 9, itemHeight: 9 },
     radar: {
       indicator: dimensions.map((dimension) => ({ name: labels[dimension], max: 100 })),
-      center: ["50%", "48%"], radius: "61%", axisName: { color: "#8296bd", fontSize: 10 },
-      splitLine: { lineStyle: { color: "rgba(44,65,112,.5)" } },
-      splitArea: { areaStyle: { color: ["transparent", "rgba(44,65,112,.12)"] } },
-      axisLine: { lineStyle: { color: "#2c4170" } },
+      center: ["50%", "48%"], radius: "61%", axisNameGap: 8, axisName: { color: "#67676e", fontSize: 11 },
+      splitLine: { lineStyle: { color: "#d3d6df" } },
+      splitArea: { areaStyle: { color: ["transparent", "#f3f6fc"] } },
+      axisLine: { lineStyle: { color: "#d5d5db" } },
     },
     series: [{
       type: "radar",
       data: lines.map((line) => ({
         name: line,
         value: dimensions.map((_, index) => Number((raw[line][index] / maxima[index] * 100).toFixed(1))),
-        itemStyle: { color: LINE_COLOR[line] || "#38d9f5" },
+        itemStyle: { color: LINE_COLOR[line] || "#0071e3" },
         areaStyle: { opacity: .17 }, lineStyle: { width: 2 },
       })),
     }],
@@ -493,6 +495,7 @@ function renderAcctCompare(associations) {
   const rows = visibleAccounts().map((account) => ({ account, ...accountMetric(account, metric, associations) }))
     .sort((left, right) => (left.value || 0) - (right.value || 0));
   const label = metric === "followers" ? "粉丝数" : metric === "articles" ? "文章数" : METRICS[metric];
+  $("chartAcct").style.minHeight = `${rows.length * 24 + 44}px`;
   makeChart("chartAcct", {
     tooltip: {
       trigger: "axis", axisPointer: { type: "shadow" },
@@ -505,23 +508,23 @@ function renderAcctCompare(associations) {
       },
     },
     grid: { left: 8, right: 52, top: 10, bottom: 4, containLabel: true },
-    xAxis: { type: "value", ...AXIS_STYLE, axisLabel: { ...AXIS_STYLE.axisLabel, formatter: (value) => fmt(value) } },
+    xAxis: { type: "value", splitNumber: 3, minInterval: 1, ...AXIS_STYLE, axisLabel: { ...AXIS_STYLE.axisLabel, formatter: (value) => fmt(value) } },
     yAxis: {
       type: "category", data: rows.map((row) => row.account.account_key), ...AXIS_STYLE,
       axisLabel: accountAxisLabel(rows),
     },
     series: [{
-      type: "bar", barWidth: 13,
+      type: "bar", barMaxWidth: 13,
       data: rows.map((row) => ({
         value: row.value || 0,
         itemStyle: {
           opacity: row.hasData ? .9 : .22,
           borderRadius: [0, 6, 6, 0],
-          color: PLATFORM_COLOR[row.account.platform] || "#38d9f5",
+          color: PLATFORM_COLOR[row.account.platform] || "#0071e3",
         },
       })),
       label: {
-        show: true, position: "right", color: "#8296bd", fontSize: 10,
+        show: true, position: "right", color: "#67676e", fontSize: 10,
         formatter: (params) => rows[params.dataIndex]?.hasData ? fmt(params.value) : "-",
       },
     }],
@@ -585,7 +588,7 @@ function renderTopList(articles) {
           <div class="rank-meta">
             <span class="tag tag-${esc(article.platform)}">${esc(article.platform_label || platformLabel(article.platform))}</span>
             <span class="tag tag-line">${esc(article.account_name)}</span>
-            <span class="rank-bar"><i style="width:${Math.max(article.stats[metric] / maximum * 100, 2)}%"></i></span>
+            <span class="rank-bar"><i style="width:${maximum > 0 ? article.stats[metric] / maximum * 100 : 0}%"></i></span>
           </div>
         </div>
         <span class="rank-val">${fmt(article.stats[metric])}</span>
@@ -595,7 +598,7 @@ function renderTopList(articles) {
 
 function renderTabs(elementId, stateKey, options) {
   $(elementId).innerHTML = options.map(([value, label]) =>
-    `<button data-value="${value}" class="${state[stateKey] === value ? "active" : ""}">${label}</button>`).join("");
+    `<button type="button" aria-pressed="${state[stateKey] === value}" data-value="${value}" class="${state[stateKey] === value ? "active" : ""}">${label}</button>`).join("");
   $(elementId).querySelectorAll("button").forEach((button) => {
     button.addEventListener("click", () => {
       state[stateKey] = button.dataset.value;
@@ -795,6 +798,8 @@ function initFilters() {
 function refresh() {
   const associations = filteredArticles();
   const articles = uniqueArticles(associations);
+  window.ContentSpotlight?.render("article", articles);
+  window.PublicationCalendar?.render("article", articles);
   $("peopleMetricNote").hidden = !articles.some(hasMpPeopleMetrics);
   renderFilterSummary(associations, articles);
   renderKPI(articles, associations);
@@ -868,8 +873,8 @@ async function main() {
 
 main().catch((error) => {
   document.body.innerHTML = `
-    <div style="padding:60px;text-align:center;color:#8296bd">
-      <h2 style="color:#dce6f8;margin-bottom:12px">数据加载失败</h2>
+    <div style="padding:60px;text-align:center;color:#67676e">
+      <h2 style="color:#1d1d1f;margin-bottom:12px">数据加载失败</h2>
       <p>${esc(error.message)}</p>
       <p style="margin-top:8px">请先运行 <code>python3 pipeline/fetch_article_data.py</code> 生成数据，并用本地服务打开页面。</p>
     </div>`;

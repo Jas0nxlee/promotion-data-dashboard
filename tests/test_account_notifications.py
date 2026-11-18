@@ -72,6 +72,26 @@ class AccountNotificationTests(unittest.TestCase):
             self.assertEqual('updated@example.com', payload['emails'][0]['to'])
             self.assertFalse(send_comment_alerts.reconcile_pending(payload, store.read()))
 
+    def test_partial_delivery_rechecks_the_current_account_route(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            store = NotificationStore(root / 'settings.json')
+            queue = root / 'queue.json'
+            old_route = 'first@example.com, second@example.com'
+            queue.write_text(json.dumps({'emails': [{
+                'id': 'mail-1', 'to': old_route, 'subject': 'comments', 'body': 'pending',
+                'new_items': [comment('甲', '1')],
+                'smtp_retry': {'route': old_route, 'addresses': ['second@example.com']},
+            }]}))
+            store.update('bilibili:甲', {'mode': 'enabled', 'email': 'new-owner@example.com'})
+            with patch.object(send_comment_alerts, 'NotificationStore', return_value=store), \
+                    patch.object(send_comment_alerts, 'connect') as connect:
+                client = connect.return_value.__enter__.return_value
+                client.send_message.return_value = {}
+                self.assertEqual(1, send_comment_alerts.send_pending(queue, {'from_addr': 'from@example.com'}))
+                self.assertEqual('new-owner@example.com', str(client.send_message.call_args.args[0]['To']))
+            self.assertFalse(queue.exists())
+
     def test_returning_to_platform_default_retargets_last_custom_queue(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)
